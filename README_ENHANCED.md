@@ -416,11 +416,3 @@ async def verify_api_key(token: str = Depends(security)):
         )
     return token
 ```
-
-## 许可证
-
-本项目基于原有TTS项目的许可证条款。
-
-## 支持
-
-如有问题或建议，请提交Issue或联系开发团队。
