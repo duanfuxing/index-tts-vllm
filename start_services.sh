@@ -36,7 +36,7 @@ log_step() {
 }
 
 # 检查依赖
-检查依赖() {
+check_dependencies() {
     log_step "检查系统依赖..."
     
     # 检查Python
@@ -55,7 +55,7 @@ log_step() {
 }
 
 # 设置环境变量
-设置环境变量() {
+setup_environment() {
     log_step "设置环境变量..."
     
     # 检查.env文件
@@ -135,7 +135,7 @@ log_step() {
 }
 
 # 创建必要的目录
-创建目录() {
+create_directories() {
     log_step "创建必要的目录..."
     
     mkdir -p storage/audio
@@ -148,7 +148,7 @@ log_step() {
 }
 
 # 安装Python依赖
-安装Python依赖() {
+install_python_dependencies() {
     log_step "安装Python依赖..."
     
     if [ -f requirements.txt ]; then
@@ -160,7 +160,7 @@ log_step() {
 }
 
 # 检查数据库连接
-检查数据库() {
+check_database() {
     log_step "检查MySQL数据库连接..."
     
     # 从环境变量获取MySQL连接信息
@@ -204,7 +204,7 @@ log_step() {
 }
 
 # 初始化数据库
-初始化数据库() {
+initialize_database() {
     log_step "初始化MySQL数据库表结构..."
     
     # 检查MySQL连接信息
@@ -234,52 +234,146 @@ log_step() {
     fi
 }
 
-# 启动API服务器
-start_api_server() {
-    log_step "启动TTS API服务器..."
+# 检查supervisor安装
+check_supervisor() {
+    if ! command -v supervisord &> /dev/null; then
+        log_error "supervisor未安装，请先安装supervisor"
+        log_info "安装命令: pip install supervisor"
+        exit 1
+    fi
     
-    # 直接启动Python进程
-    nohup python3 server/api_server.py \
-        --model_dir "$MODEL_DIR" \
-        --host "$HOST" \
-        --port "$PORT" \
-        --gpu_memory_utilization "$GPU_MEMORY_UTILIZATION" \
-        > logs/api_server.log 2>&1 &
+    if ! command -v supervisorctl &> /dev/null; then
+        log_error "supervisorctl未找到，请检查supervisor安装"
+        exit 1
+    fi
     
-    echo $! > logs/api_server.pid
-    log_info "API服务器启动完成，PID: $(cat logs/api_server.pid)"
+    log_info "supervisor检查通过"
 }
 
-# 启动任务处理器
-start_workers() {
-    log_step "启动任务处理器..."
+# 检查VPN依赖
+check_vpn_dependencies() {
+    log_step "检查VPN依赖..."
     
-    # 启动长文本任务处理器
-    nohup python3 server/task_worker.py \
-        --model-dir "$MODEL_DIR" \
-        --database-url "$DATABASE_URL" \
-        --task-type long_text \
-        --audio-output-dir "$AUDIO_OUTPUT_DIR" \
-        > logs/worker_long.log 2>&1 &
+    if ! command -v openvpn &> /dev/null; then
+        log_warn "OpenVPN未安装，VPN服务将无法启动"
+        log_info "安装命令: sudo apt-get install openvpn (Ubuntu/Debian)"
+        return 1
+    fi
     
-    echo $! > logs/worker_long.pid
-    log_info "长文本任务处理器启动完成，PID: $(cat logs/worker_long.pid)"
+    if [ ! -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
+        log_warn "VPN配置文件不存在: server/vpn/tun_autodl-gpu.ovpn"
+        return 1
+    fi
+    
+    log_info "VPN依赖检查通过"
+    return 0
+}
+
+# 启动supervisor守护进程
+start_supervisord() {
+    log_step "启动supervisor守护进程..."
+    
+    # 检查supervisor是否已经运行
+    if supervisorctl status > /dev/null 2>&1; then
+        log_info "supervisor守护进程已在运行"
+        return 0
+    fi
+    
+    # 设置环境变量供supervisor使用
+    export MODEL_DIR="$MODEL_DIR"
+    export HOST="$HOST"
+    export PORT="$PORT"
+    export GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION"
+    export DATABASE_URL="$DATABASE_URL"
+    export AUDIO_OUTPUT_DIR="$AUDIO_OUTPUT_DIR"
+    
+    # 设置supervisor进程管理配置
+    export SUPERVISOR_AUTOSTART="${SUPERVISOR_AUTOSTART:-true}"
+    export SUPERVISOR_AUTORESTART="${SUPERVISOR_AUTORESTART:-true}"
+    export SUPERVISOR_STARTSECS="${SUPERVISOR_STARTSECS:-10}"
+    export SUPERVISOR_STARTRETRIES="${SUPERVISOR_STARTRETRIES:-3}"
+    export SUPERVISOR_LOG_MAXBYTES="${SUPERVISOR_LOG_MAXBYTES:-50MB}"
+    export SUPERVISOR_LOG_BACKUPS="${SUPERVISOR_LOG_BACKUPS:-10}"
+    export SUPERVISOR_API_PRIORITY="${SUPERVISOR_API_PRIORITY:-100}"
+    export SUPERVISOR_WORKER_PRIORITY="${SUPERVISOR_WORKER_PRIORITY:-200}"
+    export SUPERVISOR_VPN_PRIORITY="${SUPERVISOR_VPN_PRIORITY:-50}"
+    export SUPERVISOR_USER="${SUPERVISOR_USER:-www-data}"
+    export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-/opt/index-tts-vllm}"
+    
+    # 启动supervisord
+    supervisord -c server/supervisor/supervisord.conf
+    
+    if [ $? -eq 0 ]; then
+        log_info "supervisor守护进程启动成功"
+        sleep 2  # 等待supervisor完全启动
+    else
+        log_error "supervisor守护进程启动失败"
+        exit 1
+    fi
+}
+
+# 启动所有服务
+start_services() {
+    log_step "通过supervisor启动TTS服务组件..."
+    
+    # 启动TTS服务组
+    supervisorctl start tts-services:*
+    
+    if [ $? -eq 0 ]; then
+        log_info "所有TTS服务组件启动完成"
+    else
+        log_error "TTS服务组件启动失败"
+        # 显示详细状态
+        supervisorctl status tts-services:*
+        exit 1
+    fi
 }
 
 # 检查服务状态
 check_services() {
     log_step "检查服务状态..."
     
-    # 检查API服务器
-    if curl -f http://localhost:$PORT/health > /dev/null 2>&1; then
-        log_info "✓ API服务器运行正常"
-    else
-        log_warn "✗ API服务器可能未正常启动"
+    # 检查supervisor守护进程
+    if ! supervisorctl status > /dev/null 2>&1; then
+        log_warn "✗ supervisor守护进程未运行"
+        return 1
     fi
     
-    # 检查数据库
+    log_info "✓ supervisor守护进程运行正常"
+    
+    # 检查所有服务组件状态
+    log_info "服务组件状态:"
+    supervisorctl status tts-services:* | while read line; do
+        if echo "$line" | grep -q "RUNNING"; then
+            service_name=$(echo "$line" | awk '{print $1}')
+            log_info "  ✓ $service_name 运行正常"
+        elif echo "$line" | grep -q "STOPPED\|FATAL\|EXITED"; then
+            service_name=$(echo "$line" | awk '{print $1}')
+            status=$(echo "$line" | awk '{print $2}')
+            log_warn "  ✗ $service_name 状态异常: $status"
+        fi
+    done
+    
+    # 检查VPN连接状态
+    log_info "检查VPN连接状态..."
+    if ip route | grep -q "tun_autodl-gpu"; then
+        log_info "✓ VPN连接正常"
+    else
+        log_warn "✗ VPN连接异常或未建立"
+    fi
+    
+    # 检查API服务器健康状态
+    log_info "检查API服务器健康状态..."
+    if curl -f http://localhost:$PORT/health > /dev/null 2>&1; then
+        log_info "✓ API服务器健康检查通过"
+    else
+        log_warn "✗ API服务器健康检查失败"
+    fi
+    
+    # 检查数据库连接
+    log_info "检查数据库连接..."
     if psql "$DATABASE_URL" -c "SELECT 1;" > /dev/null 2>&1; then
-        log_info "✓ 数据库运行正常"
+        log_info "✓ 数据库连接正常"
     else
         log_warn "✗ 数据库连接异常"
     fi
@@ -289,41 +383,85 @@ check_services() {
 stop_services() {
     log_step "停止所有服务..."
     
-    # 停止Python进程
-    if [ -f logs/api_server.pid ]; then
-        kill $(cat logs/api_server.pid) 2>/dev/null || true
-        rm -f logs/api_server.pid
-        log_info "API服务器已停止"
+    # 检查supervisor是否运行
+    if ! supervisorctl status > /dev/null 2>&1; then
+        log_warn "supervisor守护进程未运行，无需停止服务"
+        return 0
     fi
     
-    if [ -f logs/worker_long.pid ]; then
-        kill $(cat logs/worker_long.pid) 2>/dev/null || true
-        rm -f logs/worker_long.pid
-        log_info "任务处理器已停止"
+    # 停止TTS服务组
+    log_info "正在停止TTS服务组件..."
+    supervisorctl stop tts-services:*
+    
+    if [ $? -eq 0 ]; then
+        log_info "TTS服务组件已停止"
+    else
+        log_warn "停止TTS服务组件时出现问题"
     fi
+    
+    # 停止supervisor守护进程
+    log_info "正在停止supervisor守护进程..."
+    supervisorctl shutdown
+    
+    if [ $? -eq 0 ]; then
+        log_info "supervisor守护进程已停止"
+    else
+        log_warn "停止supervisor守护进程时出现问题"
+    fi
+    
+    # 清理旧的PID文件（兼容性）
+    rm -f logs/api_server.pid logs/worker_long.pid 2>/dev/null || true
     
     log_info "所有服务已停止"
 }
 
+# supervisor管理命令
+supervisor_cmd() {
+    if ! supervisorctl status > /dev/null 2>&1; then
+        log_error "supervisor守护进程未运行，请先启动服务"
+        exit 1
+    fi
+    
+    case "$1" in
+        "")
+            log_info "supervisor服务状态:"
+            supervisorctl status
+            ;;
+        *)
+            log_info "执行supervisor命令: $*"
+            supervisorctl "$@"
+            ;;
+    esac
+}
+
 # 显示帮助信息
 show_help() {
-    echo "Enhanced TTS API Server 启动脚本"
+    echo "Enhanced TTS API Server 启动脚本 (基于Supervisor)"
     echo ""
     echo "用法: $0 [命令]"
     echo ""
     echo "命令:"
-    echo "  start                 启动所有服务"
+    echo "  start                 启动所有服务 (包括TTS API、任务处理器、VPN)"
     echo "  stop                  停止所有服务"
     echo "  restart               重启所有服务"
     echo "  status                检查服务状态"
     echo "  logs                  查看日志"
+    echo "  supervisor [cmd]      执行supervisor命令"
     echo "  help                  显示此帮助信息"
+    echo ""
+    echo "服务组件:"
+    echo "  - TTS API服务器       提供语音合成API接口"
+    echo "  - TTS任务处理器       处理长文本语音合成任务"
+    echo "  - VPN服务            自动连接VPN网络"
     echo ""
     echo "示例:"
     echo "  $0 start              # 启动所有服务"
     echo "  $0 stop               # 停止所有服务"
     echo "  $0 restart            # 重启所有服务"
     echo "  $0 status             # 检查服务状态"
+    echo "  $0 supervisor         # 查看supervisor状态"
+    echo "  $0 supervisor restart tts-api-server  # 重启API服务器"
+    echo "  $0 supervisor restart vpn-service     # 重启VPN服务"
 }
 
 # 查看日志
@@ -344,21 +482,33 @@ show_logs() {
     else
         echo "任务处理器日志文件不存在"
     fi
+    
+    echo ""
+    echo "=== VPN服务日志 ==="
+    if [ -f logs/vpn.log ]; then
+        tail -n 50 logs/vpn.log
+    else
+        echo "VPN服务日志文件不存在"
+    fi
 }
 
 # 主函数
 main() {
     case "$1" in
         start)
-            检查依赖
-            设置环境变量
-            创建目录
-            安装Python依赖
+            check_dependencies
+            setup_environment
+            create_directories
+            install_python_dependencies
             
-            检查数据库
-            初始化数据库
-            start_api_server
-            start_workers
+            # 检查并启动supervisor相关服务
+            check_supervisor
+            check_vpn_dependencies
+            start_supervisord
+            
+            check_database
+            initialize_database
+            start_services
             
             sleep 5
             check_services
@@ -381,6 +531,10 @@ main() {
             ;;
         logs)
             show_logs
+            ;;
+        supervisor)
+            shift
+            supervisor_cmd "$@"
             ;;
         help|--help|-h)
             show_help
