@@ -178,18 +178,20 @@ check_database_tables() {
     
     # 检查tts_tasks表是否存在
     log_info "检查tts_tasks表..."
+    TTS_TASKS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null)
+        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null) || TTS_TASKS_EXISTS="0"
     else
-        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null)
+        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null) || TTS_TASKS_EXISTS="0"
     fi
     
     # 检查voice_configs表是否存在
     log_info "检查voice_configs表..."
+    VOICE_CONFIGS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null)
+        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null) || VOICE_CONFIGS_EXISTS="0"
     else
-        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null)
+        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null) || VOICE_CONFIGS_EXISTS="0"
     fi
     
     log_info "表存在性检查结果: tts_tasks=$TTS_TASKS_EXISTS, voice_configs=$VOICE_CONFIGS_EXISTS"
@@ -214,10 +216,10 @@ create_database_tables() {
         log_info "执行数据库初始化脚本: $PROJECT_ROOT/server/database/init.sql"
         
         if [ -n "$MYSQL_PASSWORD" ]; then
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1)
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
             MYSQL_INIT_EXIT_CODE=$?
         else
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1)
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
             MYSQL_INIT_EXIT_CODE=$?
         fi
         
