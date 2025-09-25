@@ -170,27 +170,41 @@ check_database() {
         exit 1
     fi
     
+    # 端口默认值
+    [ -z "$MYSQL_PORT" ] && MYSQL_PORT=3306
+
+    # 检查mysql客户端
+    if ! command -v mysql >/dev/null 2>&1; then
+        log_error "未找到mysql客户端(mysql)，请先安装客户端工具(例如: apt-get install -y mysql-client 或 yum install -y mysql)"
+        exit 1
+    fi
+    
     log_info "数据库配置信息:"
     log_info "  主机: $MYSQL_HOST"
     log_info "  端口: $MYSQL_PORT"
     log_info "  用户: $MYSQL_USER"
     log_info "  数据库: $MYSQL_DATABASE"
     
-    # 测试数据库连接
+    # 测试数据库连接（强制TCP，5秒超时）
     log_info "正在测试数据库连接..."
+
+    set +e
+    TMP_ERR_FILE="$(mktemp)"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        DB_TEST_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1 as test;" 2>&1)
-        DB_TEST_EXIT_CODE=$?
+        mysql --protocol=TCP --connect-timeout=5 -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1 as test;" >/dev/null 2>"$TMP_ERR_FILE"
     else
-        DB_TEST_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -e "SELECT 1 as test;" 2>&1)
-        DB_TEST_EXIT_CODE=$?
+        mysql --protocol=TCP --connect-timeout=5 -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -e "SELECT 1 as test;" >/dev/null 2>"$TMP_ERR_FILE"
     fi
+    DB_TEST_EXIT_CODE=$?
+    DB_TEST_RESULT="$(cat "$TMP_ERR_FILE")"
+    rm -f "$TMP_ERR_FILE"
+    set -e
     
     if [ $DB_TEST_EXIT_CODE -eq 0 ]; then
         log_info "✓ 数据库连接测试成功"
     else
-        log_error "✗ 数据库连接测试失败"
-        log_error "错误详情: $DB_TEST_RESULT"
+        log_error "✗ 数据库连接测试失败 (退出码: $DB_TEST_EXIT_CODE)"
+        [ -n "$DB_TEST_RESULT" ] && log_error "错误详情: $DB_TEST_RESULT"
         exit 1
     fi
 }
