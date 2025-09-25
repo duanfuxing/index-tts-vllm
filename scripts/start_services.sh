@@ -423,23 +423,34 @@ check_services() {
     # 检查supervisor守护进程
     if ! supervisorctl status > /dev/null 2>&1; then
         log_warn "✗ supervisor守护进程未运行"
-        return 1
+        # 尝试启动supervisor
+        log_info "尝试启动supervisor守护进程..."
+        start_supervisor_daemon || true
+    else
+        log_info "✓ supervisor守护进程运行正常"
+        
+        # 检查所有服务组件状态
+        log_info "服务组件状态:"
+        supervisorctl status tts-services:* | while read line; do
+            if echo "$line" | grep -q "RUNNING"; then
+                service_name=$(echo "$line" | awk '{print $1}')
+                log_info "  ✓ $service_name 运行正常"
+            elif echo "$line" | grep -q "STOPPED\|FATAL\|EXITED"; then
+                service_name=$(echo "$line" | awk '{print $1}')
+                status=$(echo "$line" | awk '{print $2}')
+                log_warn "  ✗ $service_name 状态异常: $status"
+            fi
+        done
     fi
     
-    log_info "✓ supervisor守护进程运行正常"
-    
-    # 检查所有服务组件状态
-    log_info "服务组件状态:"
-    supervisorctl status tts-services:* | while read line; do
-        if echo "$line" | grep -q "RUNNING"; then
-            service_name=$(echo "$line" | awk '{print $1}')
-            log_info "  ✓ $service_name 运行正常"
-        elif echo "$line" | grep -q "STOPPED\|FATAL\|EXITED"; then
-            service_name=$(echo "$line" | awk '{print $1}')
-            status=$(echo "$line" | awk '{print $2}')
-            log_warn "  ✗ $service_name 状态异常: $status"
-        fi
-    done
+    # 输出服务清单
+    log_info "===== 服务清单 ====="
+    log_info "1. 数据库服务: MySQL (端口: $MYSQL_PORT)"
+    log_info "2. 缓存服务: Redis (端口: $REDIS_PORT)"
+    log_info "3. API服务器 (端口: $PORT)"
+    log_info "4. 任务处理器"
+    log_info "===================="
+}
     
     # 检查服务状态
     log_info "检查服务状态..."
