@@ -914,11 +914,16 @@ main() {
             check_supervisor # 检查supervisor是否安装
             install_python_dependencies # 安装Python依赖
             
+            # 先检查并启动数据库服务，避免连接测试失败
+            check_db_services # 检查数据库服务状态
+            start_db_services # 启动MySQL/Redis服务
+            sleep 3 # 等待数据库服务就绪
+            
             start_supervisord # 启动supervisor守护进程
             
             check_database # 检查数据库连接
             initialize_database # 初始化数据库
-            start_services # 启动服务
+            start_services # 通过supervisor启动应用服务
             
             sleep 5 # 等待服务启动
             check_services # 检查服务状态
