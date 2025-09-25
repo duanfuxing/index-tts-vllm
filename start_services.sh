@@ -180,13 +180,14 @@ check_database() {
     if [ $? -eq 0 ]; then
         log_info "MySQL数据库连接正常"
     else
-        log_error "MySQL数据库连接失败，请确保MySQL服务已启动并配置正确"
-        log_error "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
-        log_error "请检查："
-        log_error "1. MySQL服务是否运行"
-        log_error "2. 数据库连接参数是否正确"
-        log_error "3. 用户权限是否足够"
-        exit 1
+        log_warn "MySQL数据库连接失败，将跳过数据库相关功能"
+        log_warn "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
+        log_warn "如需使用数据库功能，请检查："
+        log_warn "1. MySQL服务是否运行"
+        log_warn "2. 数据库连接参数是否正确"
+        log_warn "3. 用户权限是否足够"
+        export SKIP_DATABASE=true
+        return 1
     fi
     
     # 检查Redis连接
@@ -197,20 +198,28 @@ check_database() {
     if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping > /dev/null 2>&1; then
         log_info "Redis连接正常"
     else
-        log_error "Redis连接失败，请确保Redis服务已启动并配置正确"
-        log_error "连接信息: $REDIS_HOST:$REDIS_PORT"
-        exit 1
+        log_warn "Redis连接失败，将跳过缓存相关功能"
+        log_warn "连接信息: $REDIS_HOST:$REDIS_PORT"
+        export SKIP_REDIS=true
+        return 1
     fi
 }
 
 # 初始化数据库
 initialize_database() {
+    # 如果数据库检查失败，跳过初始化
+    if [ "$SKIP_DATABASE" = "true" ]; then
+        log_info "跳过数据库初始化（数据库连接失败）"
+        return 0
+    fi
+    
     log_step "初始化MySQL数据库表结构..."
     
     # 检查MySQL连接信息
     if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_DATABASE" ]; then
-        log_error "MySQL连接信息不完整，请检查环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
-        exit 1
+        log_warn "MySQL连接信息不完整，跳过数据库初始化"
+        log_warn "缺少环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
+        return 0
     fi
     
     # 执行数据库初始化脚本
@@ -226,8 +235,7 @@ initialize_database() {
         if [ $? -eq 0 ]; then
             log_info "MySQL数据库初始化完成"
         else
-            log_error "MySQL数据库初始化失败"
-            exit 1
+            log_warn "MySQL数据库初始化失败，但继续启动服务"
         fi
     else
         log_warn "数据库初始化脚本不存在，跳过初始化"
@@ -240,12 +248,12 @@ check_supervisor() {
     
     if ! command -v supervisord &> /dev/null; then
         log_warn "supervisor未安装，将在安装依赖时自动安装"
-        return 0  # 不退出，让install_python_dependencies处理
+        return 0
     fi
     
     if ! command -v supervisorctl &> /dev/null; then
         log_warn "supervisorctl未找到，将在安装依赖时重新安装supervisor"
-        return 0  # 不退出，让install_python_dependencies处理
+        return 0
     fi
     
     log_info "supervisor检查通过"
@@ -274,9 +282,9 @@ check_vpn_dependencies() {
 start_supervisord() {
     log_step "启动supervisor守护进程..."
     
-    # 检查supervisor是否已经运行
-    if supervisorctl status > /dev/null 2>&1; then
-        log_info "supervisor守护进程已在运行"
+    # 检查supervisor是否已经在运行
+    if pgrep -f "supervisord" > /dev/null; then
+        log_info "supervisor守护进程已在运行，跳过启动"
         return 0
     fi
     
@@ -317,16 +325,29 @@ start_supervisord() {
 start_services() {
     log_step "通过supervisor启动TTS服务组件..."
     
-    # 启动TTS服务组
-    supervisorctl start tts-services:*
+    # 检查服务是否已经在运行
+    if supervisorctl status tts-services:* 2>/dev/null | grep -q "RUNNING"; then
+        log_info "部分服务已在运行，检查状态..."
+        supervisorctl status tts-services:*
+        
+        # 只启动未运行的服务
+        supervisorctl status tts-services:* | grep -v "RUNNING" | awk '{print $1}' | while read service; do
+            if [ -n "$service" ]; then
+                log_info "启动服务: $service"
+                supervisorctl start "$service"
+            fi
+        done
+    else
+        # 启动TTS服务组
+        supervisorctl start tts-services:*
+    fi
     
     if [ $? -eq 0 ]; then
         log_info "所有TTS服务组件启动完成"
     else
-        log_error "TTS服务组件启动失败"
+        log_warn "部分TTS服务组件启动失败，但继续运行"
         # 显示详细状态
         supervisorctl status tts-services:*
-        exit 1
     fi
 }
 
