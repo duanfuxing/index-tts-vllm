@@ -299,10 +299,10 @@ start_supervisord() {
     export SUPERVISOR_WORKER_PRIORITY="${SUPERVISOR_WORKER_PRIORITY:-200}"
     export SUPERVISOR_VPN_PRIORITY="${SUPERVISOR_VPN_PRIORITY:-50}"
     export SUPERVISOR_USER="${SUPERVISOR_USER:-www-data}"
-    export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-/opt/index-tts-vllm}"
+    export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-$(pwd)}"
     
-    # 启动supervisord
-    supervisord -c server/supervisor/supervisord.conf
+    # 启动supervisord，使用绝对路径配置文件
+    supervisord -c "$(pwd)/server/supervisor/supervisord.conf"
     
     if [ $? -eq 0 ]; then
         log_info "supervisor守护进程启动成功"
