@@ -162,7 +162,37 @@ install_python_dependencies() {
 # 检查数据库连接
 check_database() {
     log_step "检查数据库连接..."
-    log_info "使用云服务数据库，跳过本地数据库检查"
+    
+    # 检查MySQL连接信息
+    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_DATABASE" ]; then
+        log_error "MySQL连接信息不完整"
+        log_error "缺少环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
+        exit 1
+    fi
+    
+    log_info "数据库配置信息:"
+    log_info "  主机: $MYSQL_HOST"
+    log_info "  端口: $MYSQL_PORT"
+    log_info "  用户: $MYSQL_USER"
+    log_info "  数据库: $MYSQL_DATABASE"
+    
+    # 测试数据库连接
+    log_info "正在测试数据库连接..."
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        DB_TEST_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1 as test;" 2>&1)
+        DB_TEST_EXIT_CODE=$?
+    else
+        DB_TEST_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -e "SELECT 1 as test;" 2>&1)
+        DB_TEST_EXIT_CODE=$?
+    fi
+    
+    if [ $DB_TEST_EXIT_CODE -eq 0 ]; then
+        log_info "✓ 数据库连接测试成功"
+    else
+        log_error "✗ 数据库连接测试失败"
+        log_error "错误详情: $DB_TEST_RESULT"
+        exit 1
+    fi
 }
 
 # 检查数据库表是否存在
@@ -181,18 +211,22 @@ check_database_tables() {
     TTS_TASKS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
         TTS_TASKS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>&1)
-        if [ $? -eq 0 ]; then
+        TTS_TASKS_EXIT_CODE=$?
+        if [ $TTS_TASKS_EXIT_CODE -eq 0 ]; then
             TTS_TASKS_EXISTS="$TTS_TASKS_RESULT"
+            log_info "  ✓ tts_tasks表检查完成，存在状态: $TTS_TASKS_EXISTS"
         else
-            log_warn "检查tts_tasks表时出错: $TTS_TASKS_RESULT"
+            log_warn "  ✗ 检查tts_tasks表时出错: $TTS_TASKS_RESULT"
             TTS_TASKS_EXISTS="0"
         fi
     else
         TTS_TASKS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>&1)
-        if [ $? -eq 0 ]; then
+        TTS_TASKS_EXIT_CODE=$?
+        if [ $TTS_TASKS_EXIT_CODE -eq 0 ]; then
             TTS_TASKS_EXISTS="$TTS_TASKS_RESULT"
+            log_info "  ✓ tts_tasks表检查完成，存在状态: $TTS_TASKS_EXISTS"
         else
-            log_warn "检查tts_tasks表时出错: $TTS_TASKS_RESULT"
+            log_warn "  ✗ 检查tts_tasks表时出错: $TTS_TASKS_RESULT"
             TTS_TASKS_EXISTS="0"
         fi
     fi
@@ -202,30 +236,37 @@ check_database_tables() {
     VOICE_CONFIGS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
         VOICE_CONFIGS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>&1)
-        if [ $? -eq 0 ]; then
+        VOICE_CONFIGS_EXIT_CODE=$?
+        if [ $VOICE_CONFIGS_EXIT_CODE -eq 0 ]; then
             VOICE_CONFIGS_EXISTS="$VOICE_CONFIGS_RESULT"
+            log_info "  ✓ voice_configs表检查完成，存在状态: $VOICE_CONFIGS_EXISTS"
         else
-            log_warn "检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
+            log_warn "  ✗ 检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
             VOICE_CONFIGS_EXISTS="0"
         fi
     else
         VOICE_CONFIGS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>&1)
-        if [ $? -eq 0 ]; then
+        VOICE_CONFIGS_EXIT_CODE=$?
+        if [ $VOICE_CONFIGS_EXIT_CODE -eq 0 ]; then
             VOICE_CONFIGS_EXISTS="$VOICE_CONFIGS_RESULT"
+            log_info "  ✓ voice_configs表检查完成，存在状态: $VOICE_CONFIGS_EXISTS"
         else
-            log_warn "检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
+            log_warn "  ✗ 检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
             VOICE_CONFIGS_EXISTS="0"
         fi
     fi
     
-    log_info "表存在性检查结果: tts_tasks=$TTS_TASKS_EXISTS, voice_configs=$VOICE_CONFIGS_EXISTS"
+    log_info "===== 数据库表检查结果 ====="
+    log_info "tts_tasks表存在: $([ "$TTS_TASKS_EXISTS" = "1" ] && echo "是" || echo "否")"
+    log_info "voice_configs表存在: $([ "$VOICE_CONFIGS_EXISTS" = "1" ] && echo "是" || echo "否")"
+    log_info "================================"
     
     # 如果表不存在，则创建
     if [ "$TTS_TASKS_EXISTS" = "0" ] || [ "$VOICE_CONFIGS_EXISTS" = "0" ]; then
         log_info "发现缺失的表，开始创建..."
         create_database_tables
     else
-        log_info "所有必需的表都已存在"
+        log_info "✓ 所有必需的表都已存在"
         # 检查DDL是否有变化
         check_database_schema_changes
     fi
@@ -235,27 +276,47 @@ check_database_tables() {
 create_database_tables() {
     log_step "创建数据库表..."
     
+    # 检查初始化脚本是否存在
+    if [ ! -f "$PROJECT_ROOT/server/database/init.sql" ]; then
+        log_error "数据库初始化脚本不存在: $PROJECT_ROOT/server/database/init.sql"
+        exit 1
+    fi
+    
+    log_info "找到数据库初始化脚本: $PROJECT_ROOT/server/database/init.sql"
+    log_info "脚本大小: $(wc -l < "$PROJECT_ROOT/server/database/init.sql") 行"
+    
     # 执行数据库初始化脚本
-    if [ -f "$PROJECT_ROOT/server/database/init.sql" ]; then
-        log_info "执行数据库初始化脚本: $PROJECT_ROOT/server/database/init.sql"
+    log_info "开始执行数据库初始化..."
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
+        MYSQL_INIT_EXIT_CODE=$?
+    else
+        MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
+        MYSQL_INIT_EXIT_CODE=$?
+    fi
+    
+    if [ $MYSQL_INIT_EXIT_CODE -eq 0 ]; then
+        log_info "✓ 数据库表创建/更新完成"
+        log_info "正在验证表创建结果..."
         
+        # 验证表是否创建成功
         if [ -n "$MYSQL_PASSWORD" ]; then
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
-            MYSQL_INIT_EXIT_CODE=$?
+            VERIFY_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SHOW TABLES LIKE 'tts_%';" -s -N 2>&1)
         else
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1) || true
-            MYSQL_INIT_EXIT_CODE=$?
+            VERIFY_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SHOW TABLES LIKE 'tts_%';" -s -N 2>&1)
         fi
         
-        if [ $MYSQL_INIT_EXIT_CODE -eq 0 ]; then
-            log_info "数据库表创建完成"
+        if [ $? -eq 0 ] && [ -n "$VERIFY_RESULT" ]; then
+            log_info "验证成功，已创建的表:"
+            echo "$VERIFY_RESULT" | while read table; do
+                log_info "  - $table"
+            done
         else
-            log_error "数据库表创建失败"
-            log_error "错误详情: $MYSQL_INIT_ERROR"
-            exit 1
+            log_warn "表创建验证失败或未找到相关表"
         fi
     else
-        log_error "数据库初始化脚本不存在: $PROJECT_ROOT/server/database/init.sql"
+        log_error "✗ 数据库表创建失败"
+        log_error "错误详情: $MYSQL_INIT_ERROR"
         exit 1
     fi
 }
