@@ -236,15 +236,16 @@ initialize_database() {
 
 # 检查supervisor安装
 check_supervisor() {
+    log_step "检查supervisor安装..."
+    
     if ! command -v supervisord &> /dev/null; then
-        log_error "supervisor未安装，请先安装supervisor"
-        log_info "安装命令: pip install supervisor"
-        exit 1
+        log_warn "supervisor未安装，将在安装依赖时自动安装"
+        return 0  # 不退出，让install_python_dependencies处理
     fi
     
     if ! command -v supervisorctl &> /dev/null; then
-        log_error "supervisorctl未找到，请检查supervisor安装"
-        exit 1
+        log_warn "supervisorctl未找到，将在安装依赖时重新安装supervisor"
+        return 0  # 不退出，让install_python_dependencies处理
     fi
     
     log_info "supervisor检查通过"
@@ -496,22 +497,21 @@ show_logs() {
 main() {
     case "$1" in
         start)
-            check_dependencies
-            setup_environment
-            create_directories
-            install_python_dependencies
+            check_dependencies # 检查依赖
+            setup_environment # 配置环境变量
+            create_directories # 创建必要的目录
+            check_supervisor # 检查supervisor是否安装
+            install_python_dependencies # 安装Python依赖
             
-            # 检查并启动supervisor相关服务
-            check_supervisor
-            check_vpn_dependencies
-            start_supervisord
+            check_vpn_dependencies # 检查VPN依赖
+            start_supervisord # 启动supervisor守护进程
             
-            check_database
-            initialize_database
-            start_services
+            check_database # 检查数据库连接
+            initialize_database # 初始化数据库
+            start_services # 启动服务
             
-            sleep 5
-            check_services
+            sleep 5 # 等待服务启动
+            check_services # 检查服务状态
             
             log_info "所有服务启动完成！"
             log_info "API服务器地址: http://localhost:$PORT"
@@ -519,18 +519,18 @@ main() {
             log_info "API文档: http://localhost:$PORT/docs"
             ;;
         stop)
-            stop_services
+            stop_services # 停止服务
             ;;
         restart)
-            stop_services
+            stop_services # 停止服务
             sleep 3
             main start
             ;;
         status)
-            check_services
+            check_services # 检查服务状态
             ;;
         logs)
-            show_logs
+            show_logs # 显示日志
             ;;
         supervisor)
             shift

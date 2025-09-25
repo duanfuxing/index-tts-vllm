@@ -1,39 +1,161 @@
-# 增强型TTS API服务器
+中文 ｜ <a href="README_EN.md">English</a>
 
-基于原有TTS服务的增强版本，提供在线TTS合成和长文本TTS任务队列功能。
+<div align="center">
+
+# IndexTTS-vLLM
+</div>
+
+Working on IndexTTS2 support, coming soon... 0.0
+
+## 项目简介
+该项目在 [index-tts](https://github.com/index-tts/index-tts) 的基础上使用 vllm 库重新实现了 gpt 模型的推理，加速了 index-tts 的推理过程。
+
+推理速度在单卡 RTX 4090 上的提升为：
+- 单个请求的 RTF (Real-Time Factor)：≈0.3 -> ≈0.1
+- 单个请求的 gpt 模型 decode 速度：≈90 token / s -> ≈280 token / s
+- 并发量：gpu_memory_utilization设置为0.5（约12GB显存）的情况下，vllm 显示 `Maximum concurrency for 608 tokens per request: 237.18x`，两百多并发，man！当然考虑 TTFT 以及其他推理成本（bigvgan 等），实测 16 左右的并发无压力（测速脚本参考 `simple_test.py`）
 
 ## 功能特性
 
 ### 🎯 核心功能
+- **基础TTS合成**: 支持WebUI和API调用
+- **多角色音频混合**: 可以传入多个参考音频，TTS 输出的角色声线为多个参考音频的混合版本
 - **在线TTS合成**: 限制300字，直接返回音频和字幕文件
 - **长文本TTS**: 限制5万字，提供任务提交和查询API
-- **MySQL数据库**: 可靠的关系型数据库存储
-- **Redis队列**: 高性能队列系统避免多worker重复处理
-- **音色管理**: 统一使用character指定音色
-- **健康检查**: 提供服务器状态监控API
+- **OpenAI兼容接口**: 支持 /audio/speech 和 /audio/voices API
+- **Docker一键部署**: 支持 `docker compose up` 全自动化部署
 
 ### 🚀 技术特性
+- vLLM加速推理，大幅提升并发性能
 - FastAPI框架，自动生成API文档
+- MySQL数据库可靠存储
+- Redis队列系统避免多worker重复处理
 - 异步数据库连接池
 - 任务状态实时跟踪
 - SRT字幕文件生成
-- Docker容器化部署
 - 完整的错误处理和重试机制
+
+## 性能对比
+Word Error Rate (WER) Results for IndexTTS and Baseline Models on the [**seed-test**](https://github.com/BytedanceSpeech/seed-tts-eval)
+
+| model                   | zh    | en    |
+| ----------------------- | ----- | ----- |
+| Human                   | 1.254 | 2.143 |
+| index-tts (num_beams=3) | 1.005 | 1.943 |
+| index-tts (num_beams=1) | 1.107 | 2.032 |
+| index-tts-vllm      | 1.12  | 1.987 |
+
+基本保持了原项目的性能
+
+## 更新日志
+
+- **[2025-08-07]** 支持 Docker 全自动化一键部署 API 服务：`docker compose up`
+- **[2025-08-06]** 支持 openai 接口格式调用：
+    1. 添加 /audio/speech api 路径，兼容 OpenAI 接口
+    2. 添加 /audio/voices api 路径， 获得 voice/character 列表
+    - 对应：[createSpeech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
 
 ## 快速开始
 
-### 1. 环境准备
+### 方式一：Docker 一键部署（推荐）
 
 ```bash
-# 克隆项目（如果需要）
-git clone <repository_url>
-cd server
+# 克隆项目
+git clone https://github.com/Ksuriuri/index-tts-vllm.git
+cd index-tts-vllm
 
-# 安装Python依赖
-pip install -r requirements.txt
+# 一键启动所有服务
+docker compose up
 ```
 
-### 2. 配置环境
+### 方式二：手动部署
+
+#### 1. 克隆项目
+```bash
+git clone https://github.com/Ksuriuri/index-tts-vllm.git
+cd index-tts-vllm
+```
+
+#### 2. 优化缓存配置（可选，适用于云服务器）
+```bash
+# 设置 pip 缓存到数据盘
+mkdir -p /root/autodl-tmp/pip_cache
+pip config set global.cache-dir /root/autodl-tmp/pip_cache
+
+# 设置 conda 缓存到数据盘
+conda config --add pkgs_dirs /root/autodl-tmp/conda_cache
+```
+
+#### 3. 创建并激活 conda 环境
+```bash
+# 标准方式
+conda create -n index-tts-vllm python=3.12
+conda activate index-tts-vllm
+
+# 或者指定路径（适用于数据盘）
+conda create --prefix conda_envs/index-tts-vllm python=3.12
+conda activate conda_envs/index-tts-vllm
+```
+
+#### 4. 安装 PyTorch
+```bash
+# 优先建议安装 pytorch 2.7.0（对应 vllm 0.9.0）
+# 具体安装指令请参考：https://pytorch.org/get-started/locally/
+
+# CUDA 12.1 版本示例
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# 若显卡不支持，请安装 pytorch 2.5.1（对应 vllm 0.7.3）
+# 并将 requirements.txt 中 vllm==0.9.0 修改为 vllm==0.7.3
+```
+
+#### 5. 安装依赖
+```bash
+# 使用清华源加速安装
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
+
+# 安装特定版本的 transformers（如果需要）
+pip install transformers==4.51.1
+```
+
+#### 6. 下载模型权重
+
+此为官方权重文件，下载到本地任意路径即可，支持 IndexTTS-1.5 的权重
+
+| **HuggingFace**                                          | **ModelScope** |
+|----------------------------------------------------------|----------------------------------------------------------|
+| [IndexTTS](https://huggingface.co/IndexTeam/Index-TTS) | [IndexTTS](https://modelscope.cn/models/IndexTeam/Index-TTS) |
+| [😁IndexTTS-1.5](https://huggingface.co/IndexTeam/IndexTTS-1.5) | [IndexTTS-1.5](https://modelscope.cn/models/IndexTeam/IndexTTS-1.5) |
+
+#### 7. 模型权重转换
+
+```bash
+bash convert_hf_format.sh /path/to/your/model_dir
+```
+
+此操作会将官方的模型权重转换为 transformers 库兼容的版本，保存在模型权重路径下的 `vllm` 文件夹中，方便后续 vllm 库加载模型权重
+
+#### 8. 启动服务
+
+##### WebUI 启动
+将 [`webui.py`](webui.py) 中的 `model_dir` 修改为模型权重下载路径，然后运行：
+
+```bash
+VLLM_USE_V1=0 python webui.py
+```
+
+##### API 服务启动
+```bash
+VLLM_USE_V1=0 python api_server.py --model_dir /your/path/to/Index-TTS --port 11996
+```
+
+**注意**：一定要带上 `VLLM_USE_V1=0`，因为本项目没有对 vllm 的 v1 版本做兼容
+
+第一次启动可能会久一些，因为要对 bigvgan 进行 cuda 核编译
+
+## 增强型 API 服务部署
+
+### 环境配置
 
 复制并编辑配置文件：
 ```bash
@@ -57,7 +179,7 @@ HOST=0.0.0.0
 PORT=11996
 ```
 
-### 3. 数据库准备
+### 数据库准备
 
 #### MySQL数据库
 
@@ -150,7 +272,7 @@ sudo systemctl restart redis
 3. 获取连接地址、端口、用户名和密码
 4. 在.env文件中配置相应的连接信息
 
-### 4. 启动服务
+### 启动增强型服务
 
 #### 方式一：使用启动脚本（推荐）
 ```bash
@@ -182,7 +304,7 @@ python server/enhanced_api_server.py --model_dir /path/to/model --host 0.0.0.0 -
 python server/task_worker.py --model-dir /path/to/model --task-type long_text
 ```
 
-### 5. 验证部署
+### 验证部署
 
 ```bash
 # 健康检查
@@ -197,7 +319,42 @@ curl -X POST "http://localhost:11996/tts/online" \
   -d '{"text":"你好，这是测试文本","character":"female"}'
 ```
 
-## API 文档
+## 基础 API 使用
+
+### 启动参数
+- `--model_dir`: 模型权重下载路径
+- `--host`: 服务ip地址
+- `--port`: 服务端口
+- `--gpu_memory_utilization`: vllm 显存占用率，默认设置为 `0.25`
+
+### 基础请求示例
+```python
+import requests
+
+url = "http://0.0.0.0:11996/tts_url"
+data = {
+    "text": "还是会想你，还是想登你",
+    "audio_paths": [  # 支持多参考音频
+        "audio1.wav",
+        "audio2.wav"
+    ]
+}
+
+response = requests.post(url, json=data)
+with open("output.wav", "wb") as f:
+    f.write(response.content)
+```
+
+### OpenAI 兼容接口
+- 添加 /audio/speech api 路径，兼容 OpenAI 接口
+- 添加 /audio/voices api 路径， 获得 voice/character 列表
+
+详见：[createSpeech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
+
+### 并发测试
+参考 [`simple_test.py`](simple_test.py)，需先启动 API 服务
+
+## 增强型 API 文档
 
 启动服务后，访问以下地址查看完整API文档：
 - Swagger UI: http://localhost:11996/docs
