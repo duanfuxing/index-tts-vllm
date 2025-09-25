@@ -44,6 +44,21 @@ check_dependencies() {
         log_error "Python3未安装，请先安装Python3"
         exit 1
     fi
+
+    # 检查并安装数据库相关客户端工具
+    if ! command -v mysql &> /dev/null; then
+        log_warn "未找到mysql客户端(mysql)，尝试自动安装..."
+        "$SCRIPT_DIR/db_services.sh" install
+    else
+        log_info "✓ MySQL客户端已安装: $(mysql --version | head -n1)"
+    fi
+
+    if ! command -v redis-server &> /dev/null; then
+        log_warn "未找到redis服务器(redis-server)，尝试自动安装..."
+        "$SCRIPT_DIR/db_services.sh" install
+    else
+        log_info "✓ Redis已安装: $(redis-server --version | head -n1)"
+    fi
     
     log_info "系统依赖检查完成"
 }
@@ -84,6 +99,30 @@ setup_environment() {
     # 加载环境变量
     if [ -f "$PROJECT_ROOT/.env" ]; then
         export $(cat "$PROJECT_ROOT/.env" | grep -v '^#' | grep -v '^$' | xargs)
+    fi
+
+    # 补充常见的MySQL客户端安装路径到PATH（macOS Homebrew）
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if [ -d "/opt/homebrew/opt/mysql-client/bin" ]; then
+            export PATH="/opt/homebrew/opt/mysql-client/bin:$PATH"
+        fi
+        if [ -d "/usr/local/opt/mysql-client/bin" ]; then
+            export PATH="/usr/local/opt/mysql-client/bin:$PATH"
+        fi
+        if [ -d "/opt/homebrew/opt/mysql/bin" ]; then
+            export PATH="/opt/homebrew/opt/mysql/bin:$PATH"
+        fi
+        if [ -d "/usr/local/opt/mysql/bin" ]; then
+            export PATH="/usr/local/opt/mysql/bin:$PATH"
+        fi
+    fi
+
+    # 显示mysql客户端情况
+    if command -v mysql &> /dev/null; then
+        log_info "✓ MySQL客户端路径: $(command -v mysql)"
+        log_info "✓ MySQL客户端版本: $(mysql --version | head -n1)"
+    else
+        log_warn "未在PATH中找到mysql客户端，后续步骤将尝试安装并补充PATH"
     fi
     
     # 检查数据库配置文件是否存在，如果不存在则创建
