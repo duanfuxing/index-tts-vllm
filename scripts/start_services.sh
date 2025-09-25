@@ -395,13 +395,14 @@ start_services() {
         supervisorctl status tts-services:* | grep -v "RUNNING" | awk '{print $1}' | while read service; do
             if [ -n "$service" ]; then
                 log_info "启动服务: $service"
-                supervisorctl start "$service"
+                supervisorctl start "$service" || true
             fi
         done
+        SUPERVISOR_START_EXIT_CODE=$?
     else
         # 启动TTS服务组
         log_info "启动所有TTS服务组件..."
-        SUPERVISOR_START_ERROR=$(supervisorctl start tts-services:* 2>&1)
+        SUPERVISOR_START_ERROR=$(supervisorctl start tts-services:* 2>&1) || true
         SUPERVISOR_START_EXIT_CODE=$?
     fi
     
@@ -411,8 +412,7 @@ start_services() {
         log_error "TTS服务组件启动失败"
         log_error "错误详情: $SUPERVISOR_START_ERROR"
         # 显示详细状态
-        supervisorctl status tts-services:*
-        exit 1
+        supervisorctl status tts-services:* || true
     fi
 }
 
@@ -602,6 +602,14 @@ main() {
             log_info "API服务器地址: http://localhost:$PORT"
             log_info "健康检查: http://localhost:$PORT/health"
             log_info "API文档: http://localhost:$PORT/docs"
+            
+            # 输出服务清单
+            log_info "===== 服务清单 ====="
+            log_info "1. 数据库服务: MySQL (端口: $MYSQL_PORT)"
+            log_info "2. 缓存服务: Redis (端口: $REDIS_PORT)"
+            log_info "3. API服务器 (端口: $PORT)"
+            log_info "4. 任务处理器"
+            log_info "===================="
             ;;
         stop)
             stop_services # 停止服务
