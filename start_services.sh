@@ -152,10 +152,20 @@ install_python_dependencies() {
     log_step "安装Python依赖..."
     
     if [ -f requirements.txt ]; then
-        pip3 install -r requirements.txt
-        log_info "Python依赖安装完成"
+        log_info "开始安装Python依赖包..."
+        PIP_ERROR=$(pip3 install -r requirements.txt 2>&1)
+        PIP_EXIT_CODE=$?
+        
+        if [ $PIP_EXIT_CODE -eq 0 ]; then
+            log_info "Python依赖安装完成"
+        else
+            log_error "Python依赖安装失败"
+            log_error "错误详情: $PIP_ERROR"
+            exit 1
+        fi
     else
-        log_warn "requirements.txt文件不存在，跳过Python依赖安装"
+        log_error "requirements.txt文件不存在"
+        exit 1
     fi
 }
 
@@ -171,17 +181,22 @@ check_database() {
     MYSQL_DATABASE=${MYSQL_DATABASE:-tts_db}
     
     # 检查MySQL连接
+    log_info "尝试连接MySQL: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
+    
     if [ -n "$MYSQL_PASSWORD" ]; then
-        mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" > /dev/null 2>&1
+        MYSQL_ERROR=$(mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" 2>&1)
+        MYSQL_EXIT_CODE=$?
     else
-        mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -e "SELECT 1;" > /dev/null 2>&1
+        MYSQL_ERROR=$(mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -e "SELECT 1;" 2>&1)
+        MYSQL_EXIT_CODE=$?
     fi
     
-    if [ $? -eq 0 ]; then
+    if [ $MYSQL_EXIT_CODE -eq 0 ]; then
         log_info "MySQL数据库连接正常"
     else
         log_error "MySQL数据库连接失败"
         log_error "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
+        log_error "错误详情: $MYSQL_ERROR"
         log_error "请检查："
         log_error "1. MySQL服务是否运行"
         log_error "2. 数据库连接参数是否正确"
@@ -194,50 +209,171 @@ check_database() {
     REDIS_HOST=${REDIS_HOST:-localhost}
     REDIS_PORT=${REDIS_PORT:-6379}
     
-    if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping > /dev/null 2>&1; then
+    log_info "尝试连接Redis: $REDIS_HOST:$REDIS_PORT"
+    REDIS_ERROR=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping 2>&1)
+    REDIS_EXIT_CODE=$?
+    
+    if [ $REDIS_EXIT_CODE -eq 0 ]; then
         log_info "Redis连接正常"
     else
         log_error "Redis连接失败"
         log_error "连接信息: $REDIS_HOST:$REDIS_PORT"
+        log_error "错误详情: $REDIS_ERROR"
         exit 1
     fi
 }
 
-# 初始化数据库
-initialize_database() {
-    # 如果数据库检查失败，跳过初始化
-    if [ "$SKIP_DATABASE" = "true" ]; then
-        log_info "跳过数据库初始化（数据库连接失败）"
-        return 0
-    fi
-    
-    log_step "初始化MySQL数据库表结构..."
+# 检查数据库表是否存在
+check_database_tables() {
+    log_step "检查数据库表结构..."
     
     # 检查MySQL连接信息
     if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_DATABASE" ]; then
-        log_warn "MySQL连接信息不完整，跳过数据库初始化"
-        log_warn "缺少环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
-        return 0
+        log_error "MySQL连接信息不完整，无法检查表结构"
+        log_error "缺少环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
+        exit 1
     fi
+    
+    # 检查tts_tasks表是否存在
+    log_info "检查tts_tasks表..."
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null)
+    else
+        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null)
+    fi
+    
+    # 检查voice_configs表是否存在
+    log_info "检查voice_configs表..."
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null)
+    else
+        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null)
+    fi
+    
+    log_info "表存在性检查结果: tts_tasks=$TTS_TASKS_EXISTS, voice_configs=$VOICE_CONFIGS_EXISTS"
+    
+    # 如果表不存在，则创建
+    if [ "$TTS_TASKS_EXISTS" = "0" ] || [ "$VOICE_CONFIGS_EXISTS" = "0" ]; then
+        log_info "发现缺失的表，开始创建..."
+        create_database_tables
+    else
+        log_info "所有必需的表都已存在"
+        # 检查DDL是否有变化
+        check_database_schema_changes
+    fi
+}
+
+# 创建数据库表
+create_database_tables() {
+    log_step "创建数据库表..."
     
     # 执行数据库初始化脚本
     if [ -f server/database/init.sql ]; then
-        log_info "连接到MySQL数据库: $MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
+        log_info "执行数据库初始化脚本: server/database/init.sql"
         
         if [ -n "$MYSQL_PASSWORD" ]; then
-            mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < server/database/init.sql
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < server/database/init.sql 2>&1)
+            MYSQL_INIT_EXIT_CODE=$?
         else
-            mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < server/database/init.sql
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < server/database/init.sql 2>&1)
+            MYSQL_INIT_EXIT_CODE=$?
         fi
         
-        if [ $? -eq 0 ]; then
-            log_info "MySQL数据库初始化完成"
+        if [ $MYSQL_INIT_EXIT_CODE -eq 0 ]; then
+            log_info "数据库表创建完成"
         else
-            log_warn "MySQL数据库初始化失败，但继续启动服务"
+            log_error "数据库表创建失败"
+            log_error "错误详情: $MYSQL_INIT_ERROR"
+            exit 1
         fi
     else
-        log_warn "数据库初始化脚本不存在，跳过初始化"
+        log_error "数据库初始化脚本不存在: server/database/init.sql"
+        exit 1
     fi
+}
+
+# 检查数据库架构变化
+check_database_schema_changes() {
+    log_step "检查数据库架构变化..."
+    
+    # 生成当前表结构的校验和
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        CURRENT_SCHEMA=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "
+            SELECT CONCAT(table_name, ':', column_name, ':', data_type, ':', is_nullable, ':', column_default) 
+            FROM information_schema.columns 
+            WHERE table_schema = DATABASE() AND table_name IN ('tts_tasks', 'voice_configs') 
+            ORDER BY table_name, ordinal_position;
+        " -s -N 2>/dev/null)
+    else
+        CURRENT_SCHEMA=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "
+            SELECT CONCAT(table_name, ':', column_name, ':', data_type, ':', is_nullable, ':', column_default) 
+            FROM information_schema.columns 
+            WHERE table_schema = DATABASE() AND table_name IN ('tts_tasks', 'voice_configs') 
+            ORDER BY table_name, ordinal_position;
+        " -s -N 2>/dev/null)
+    fi
+    
+    # 计算当前架构的MD5
+    CURRENT_SCHEMA_MD5=$(echo "$CURRENT_SCHEMA" | md5sum | cut -d' ' -f1)
+    
+    # 计算期望架构的MD5（基于init.sql）
+    if [ -f server/database/init.sql ]; then
+        EXPECTED_SCHEMA_MD5=$(grep -E "CREATE TABLE|ADD COLUMN|MODIFY COLUMN" server/database/init.sql | md5sum | cut -d' ' -f1)
+    else
+        log_error "数据库初始化脚本不存在: server/database/init.sql"
+        exit 1
+    fi
+    
+    log_info "当前架构MD5: $CURRENT_SCHEMA_MD5"
+    log_info "期望架构MD5: $EXPECTED_SCHEMA_MD5"
+    
+    if [ "$CURRENT_SCHEMA_MD5" != "$EXPECTED_SCHEMA_MD5" ]; then
+        log_warn "检测到数据库架构变化，需要更新表结构"
+        update_database_schema
+    else
+        log_info "数据库架构无变化，跳过更新"
+    fi
+}
+
+# 更新数据库架构
+update_database_schema() {
+    log_step "更新数据库架构..."
+    
+    # 备份当前数据库结构
+    BACKUP_FILE="database/backups/schema_backup_$(date +%Y%m%d_%H%M%S).sql"
+    mkdir -p database/backups
+    
+    log_info "备份当前数据库结构到: $BACKUP_FILE"
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --no-data "$MYSQL_DATABASE" > "$BACKUP_FILE" 2>/dev/null
+    else
+        mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --no-data "$MYSQL_DATABASE" > "$BACKUP_FILE" 2>/dev/null
+    fi
+    
+    if [ $? -eq 0 ]; then
+        log_info "数据库结构备份完成"
+    else
+        log_warn "数据库结构备份失败，但继续执行更新"
+    fi
+    
+    # 执行架构更新（重新运行init.sql）
+    log_info "执行数据库架构更新..."
+    create_database_tables
+}
+
+# 初始化数据库
+initialize_database() {
+    log_step "初始化MySQL数据库..."
+    
+    # 检查MySQL连接信息
+    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_DATABASE" ]; then
+        log_error "MySQL连接信息不完整，跳过数据库初始化"
+        log_error "缺少环境变量: MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE"
+        exit 1
+    fi
+    
+    # 检查并创建/更新数据库表
+    check_database_tables
 }
 
 # 检查supervisor安装
@@ -257,23 +393,110 @@ check_supervisor() {
     log_info "supervisor检查通过"
 }
 
-# 检查VPN依赖
+# 检查VPN依赖和连通性
 check_vpn_dependencies() {
-    log_step "检查VPN依赖..."
+    log_step "检查VPN依赖和连通性..."
     
+    # 检查OpenVPN是否安装
     if ! command -v openvpn &> /dev/null; then
         log_warn "OpenVPN未安装，VPN服务将无法启动"
         log_info "安装命令: sudo apt-get install openvpn (Ubuntu/Debian)"
         return 1
     fi
     
+    # 检查VPN配置文件是否存在
     if [ ! -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
         log_warn "VPN配置文件不存在: server/vpn/tun_autodl-gpu.ovpn"
         return 1
     fi
     
     log_info "VPN依赖检查通过"
+    
+    # 检查VPN连通性
+    check_vpn_connectivity
+    
     return 0
+}
+
+# 检查VPN连通性
+check_vpn_connectivity() {
+    log_step "检查VPN连通性..."
+    
+    # 检查是否已有VPN连接
+    VPN_INTERFACE=$(ip route | grep -E "tun[0-9]+" | head -1 | awk '{print $3}' 2>/dev/null)
+    
+    if [ -n "$VPN_INTERFACE" ]; then
+        log_info "检测到VPN接口: $VPN_INTERFACE"
+        
+        # 获取VPN网关IP
+        VPN_GATEWAY=$(ip route | grep "$VPN_INTERFACE" | grep -E "^default|^0\.0\.0\.0" | awk '{print $3}' | head -1 2>/dev/null)
+        
+        if [ -n "$VPN_GATEWAY" ]; then
+            log_info "VPN网关: $VPN_GATEWAY"
+            
+            # 测试VPN网关连通性
+            log_info "测试VPN网关连通性..."
+            if ping -c 3 -W 5 "$VPN_GATEWAY" >/dev/null 2>&1; then
+                log_info "VPN网关连通性测试通过"
+                
+                # 测试外网连通性（通过VPN）
+                log_info "测试外网连通性（通过VPN）..."
+                if ping -c 3 -W 5 8.8.8.8 >/dev/null 2>&1; then
+                    log_info "VPN外网连通性测试通过"
+                    return 0
+                else
+                    log_warn "VPN外网连通性测试失败"
+                    return 1
+                fi
+            else
+                log_warn "VPN网关连通性测试失败"
+                return 1
+            fi
+        else
+            log_warn "无法获取VPN网关信息"
+            return 1
+        fi
+    else
+        log_info "未检测到活动的VPN连接"
+        
+        # 尝试启动VPN连接进行测试
+        if [ -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
+            log_info "尝试测试VPN配置文件..."
+            
+            # 使用openvpn --config检查配置文件语法
+            VPN_CONFIG_CHECK=$(openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 1 --connect-timeout 10 --daemon 2>&1)
+            VPN_CONFIG_EXIT_CODE=$?
+            
+            if [ $VPN_CONFIG_EXIT_CODE -eq 0 ]; then
+                log_info "VPN配置文件语法检查通过"
+                
+                # 等待几秒让VPN尝试连接
+                sleep 5
+                
+                # 检查VPN进程是否启动
+                if pgrep -f "openvpn.*tun_autodl-gpu.ovpn" >/dev/null; then
+                    log_info "VPN连接测试启动成功"
+                    
+                    # 停止测试连接
+                    pkill -f "openvpn.*tun_autodl-gpu.ovpn" 2>/dev/null
+                    log_info "VPN测试连接已停止"
+                    
+                    return 0
+                else
+                    log_warn "VPN连接测试启动失败"
+                    log_warn "配置检查输出: $VPN_CONFIG_CHECK"
+                    return 1
+                fi
+            else
+                log_warn "VPN配置文件语法检查失败"
+                log_warn "错误详情: $VPN_CONFIG_CHECK"
+                return 1
+            fi
+        else
+            log_warn "VPN配置文件不存在，无法进行连通性测试"
+            return 1
+        fi
+    fi
 }
 
 # 启动supervisor守护进程
@@ -308,13 +531,16 @@ start_supervisord() {
     export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-$(pwd)}"
     
     # 启动supervisord，使用绝对路径配置文件
-    supervisord -c "$(pwd)/server/supervisor/supervisord.conf"
+    log_info "启动supervisor守护进程..."
+    SUPERVISORD_ERROR=$(supervisord -c "$(pwd)/server/supervisor/supervisord.conf" 2>&1)
+    SUPERVISORD_EXIT_CODE=$?
     
-    if [ $? -eq 0 ]; then
+    if [ $SUPERVISORD_EXIT_CODE -eq 0 ]; then
         log_info "supervisor守护进程启动成功"
         sleep 2  # 等待supervisor完全启动
     else
         log_error "supervisor守护进程启动失败"
+        log_error "错误详情: $SUPERVISORD_ERROR"
         exit 1
     fi
 }
@@ -337,15 +563,19 @@ start_services() {
         done
     else
         # 启动TTS服务组
-        supervisorctl start tts-services:*
+        log_info "启动所有TTS服务组件..."
+        SUPERVISOR_START_ERROR=$(supervisorctl start tts-services:* 2>&1)
+        SUPERVISOR_START_EXIT_CODE=$?
     fi
     
-    if [ $? -eq 0 ]; then
+    if [ $SUPERVISOR_START_EXIT_CODE -eq 0 ]; then
         log_info "所有TTS服务组件启动完成"
     else
-        log_warn "部分TTS服务组件启动失败，但继续运行"
+        log_error "TTS服务组件启动失败"
+        log_error "错误详情: $SUPERVISOR_START_ERROR"
         # 显示详细状态
         supervisorctl status tts-services:*
+        exit 1
     fi
 }
 

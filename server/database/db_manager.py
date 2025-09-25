@@ -38,8 +38,8 @@ class DatabaseManager:
             )
             self.logger.info("MySQL数据库连接池创建成功")
             
-            # 如果表不存在则创建
-            await self.create_tables()
+            # 检查表是否存在，如果不存在则由启动脚本创建
+            tables_status = await self.check_tables_exist()
             
         except Exception as e:
             self.logger.error(f"MySQL数据库初始化失败: {e}")
@@ -58,61 +58,29 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             yield conn
     
-    async def create_tables(self):
-        """创建数据库表"""
+    async def check_tables_exist(self):
+        """检查数据库表是否存在"""
         async with self.get_connection() as conn:
             async with conn.cursor() as cursor:
-                # 创建TTS任务表
+                # 检查tts_tasks表是否存在
                 await cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS tts_tasks (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        task_id VARCHAR(100) UNIQUE NOT NULL,
-                        task_type VARCHAR(20) NOT NULL,
-                        status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                        task_directory VARCHAR(500),
-                        text_file_path VARCHAR(500),
-                        text_preview VARCHAR(200),
-                        voice VARCHAR(50) NOT NULL,
-                        payload JSON,
-                        audio_file_path VARCHAR(500),
-                        audio_url VARCHAR(500),
-                        srt_file_path VARCHAR(500),
-                        srt_url VARCHAR(500),
-                        error_message VARCHAR(1000),
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        started_at TIMESTAMP NULL,
-                        completed_at TIMESTAMP NULL,
-                        callback_url VARCHAR(500),
-                        INDEX idx_task_id (task_id),
-                        INDEX idx_status (status),
-                        INDEX idx_task_type (task_type),
-                        INDEX idx_created_at (created_at),
-                        INDEX idx_updated_at (updated_at),
-                        INDEX idx_voice (voice),
-                        INDEX idx_queue (status, task_type, created_at ASC)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    SELECT COUNT(*) FROM information_schema.tables 
+                    WHERE table_schema = DATABASE() AND table_name = 'tts_tasks'
                 """)
+                tts_tasks_exists = (await cursor.fetchone())[0] > 0
                 
-                # 创建音色配置表
+                # 检查voice_configs表是否存在
                 await cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS voice_configs (
-                        id VARCHAR(36) PRIMARY KEY,
-                        voice_name VARCHAR(100) UNIQUE NOT NULL,
-                        display_name VARCHAR(200),
-                        description TEXT,
-                        gender VARCHAR(10),
-                        config JSON,
-                        is_active BOOLEAN DEFAULT TRUE,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_voice_name (voice_name),
-                        INDEX idx_is_active (is_active),
-                        INDEX idx_gender (gender)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    SELECT COUNT(*) FROM information_schema.tables 
+                    WHERE table_schema = DATABASE() AND table_name = 'voice_configs'
                 """)
+                voice_configs_exists = (await cursor.fetchone())[0] > 0
                 
-                self.logger.info("数据库表创建完成")
+                self.logger.info(f"表存在性检查: tts_tasks={tts_tasks_exists}, voice_configs={voice_configs_exists}")
+                return {
+                    'tts_tasks': tts_tasks_exists,
+                    'voice_configs': voice_configs_exists
+                }
     
     def _generate_short_id(self) -> str:
         """生成短ID（8位随机字符串）"""
