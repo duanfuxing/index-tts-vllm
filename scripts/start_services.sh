@@ -15,7 +15,7 @@ NC='\033[0m' # 无颜色
 
 # 配置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVER_DIR="$PROJECT_ROOT/server"
 
 # 打印彩色输出的函数
@@ -45,13 +45,23 @@ check_dependencies() {
         exit 1
     fi
     
-    # 检查MySQL客户端（仅在需要初始化数据库时检查）
-    if [ "$INIT_DB" = "true" ] && ! command -v mysql &> /dev/null; then
-        log_warn "MySQL客户端未安装，将跳过数据库初始化"
-        SKIP_DB_INIT=true
-    fi
-    
     log_info "系统依赖检查完成"
+}
+
+# 检查数据库服务状态
+check_db_services() {
+    log_step "检查数据库服务状态..."
+    
+    # 调用db_services.sh脚本检查服务状态
+    "$SCRIPT_DIR/db_services.sh" status
+}
+
+# 启动数据库服务
+start_db_services() {
+    log_step "启动数据库服务..."
+    
+    # 调用db_services.sh脚本启动服务
+    "$SCRIPT_DIR/db_services.sh" start
 }
 
 # 设置环境变量
@@ -59,10 +69,10 @@ setup_environment() {
     log_step "设置环境变量..."
     
     # 检查.env文件
-    if [ ! -f ".env" ]; then
-        if [ -f ".env.example" ]; then
+    if [ ! -f "$PROJECT_ROOT/.env" ]; then
+        if [ -f "$PROJECT_ROOT/.env.example" ]; then
             log_info "复制.env.example到.env"
-            cp .env.example .env
+            cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
             log_warn "请根据实际情况修改.env文件中的配置"
         else
             log_error ".env文件不存在，且未找到.env.example文件"
@@ -72,38 +82,18 @@ setup_environment() {
     fi
     
     # 加载环境变量
-    if [ -f ".env" ]; then
-        export $(cat .env | grep -v '^#' | grep -v '^$' | xargs)
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        export $(cat "$PROJECT_ROOT/.env" | grep -v '^#' | grep -v '^$' | xargs)
+    fi
+    
+    # 检查数据库配置文件是否存在，如果不存在则创建
+    if [ ! -f "$SERVER_DIR/database/mysql.cnf" ] || [ ! -f "$SERVER_DIR/cache/redis.conf" ]; then
+        log_info "创建数据库配置文件..."
+        "$SCRIPT_DIR/db_services.sh" config
     fi
     
     # 检查必要的环境变量
     log_info "检查环境变量配置..."
-    
-    # 检查MySQL配置
-    missing_mysql_vars=()
-    [ -z "$MYSQL_HOST" ] && missing_mysql_vars+=("MYSQL_HOST")
-    [ -z "$MYSQL_PORT" ] && missing_mysql_vars+=("MYSQL_PORT")
-    [ -z "$MYSQL_USER" ] && missing_mysql_vars+=("MYSQL_USER")
-    [ -z "$MYSQL_PASSWORD" ] && missing_mysql_vars+=("MYSQL_PASSWORD")
-    [ -z "$MYSQL_DATABASE" ] && missing_mysql_vars+=("MYSQL_DATABASE")
-    
-    if [ ${#missing_mysql_vars[@]} -gt 0 ]; then
-        log_error "MySQL配置缺失以下参数: ${missing_mysql_vars[*]}"
-        log_error "请在.env文件中配置这些参数"
-        exit 1
-    fi
-    
-    # 检查Redis配置
-    missing_redis_vars=()
-    [ -z "$REDIS_HOST" ] && missing_redis_vars+=("REDIS_HOST")
-    [ -z "$REDIS_PORT" ] && missing_redis_vars+=("REDIS_PORT")
-    [ -z "$REDIS_DB" ] && missing_redis_vars+=("REDIS_DB")
-    
-    if [ ${#missing_redis_vars[@]} -gt 0 ]; then
-        log_error "Redis配置缺失以下参数: ${missing_redis_vars[*]}"
-        log_error "请在.env文件中配置这些参数"
-        exit 1
-    fi
     
     # 检查TTS模型配置
     if [ -z "$MODEL_DIR" ]; then
@@ -126,8 +116,6 @@ setup_environment() {
         exit 1
     fi
     
-    log_info "✓ MySQL配置: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
-    log_info "✓ Redis配置: $REDIS_HOST:$REDIS_PORT/$REDIS_DB"
     log_info "✓ 模型目录: $MODEL_DIR"
     log_info "✓ 服务器配置: $HOST:$PORT"
     
@@ -138,6 +126,7 @@ setup_environment() {
 create_directories() {
     log_step "创建必要的目录..."
     
+    cd "$PROJECT_ROOT"
     mkdir -p storage/audio
     mkdir -p storage/tasks
     mkdir -p storage/srt
@@ -151,6 +140,7 @@ create_directories() {
 install_python_dependencies() {
     log_step "安装Python依赖..."
     
+    cd "$PROJECT_ROOT"
     if [ -f requirements.txt ]; then
         log_info "开始安装Python依赖包..."
         PIP_ERROR=$(pip3 install -r requirements.txt 2>&1)
@@ -171,56 +161,8 @@ install_python_dependencies() {
 
 # 检查数据库连接
 check_database() {
-    log_step "检查MySQL数据库连接..."
-    
-    # 从环境变量获取MySQL连接信息
-    MYSQL_HOST=${MYSQL_HOST:-localhost}
-    MYSQL_PORT=${MYSQL_PORT:-3306}
-    MYSQL_USER=${MYSQL_USER:-root}
-    MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
-    MYSQL_DATABASE=${MYSQL_DATABASE:-tts_db}
-    
-    # 检查MySQL连接
-    log_info "尝试连接MySQL: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
-    
-    if [ -n "$MYSQL_PASSWORD" ]; then
-        MYSQL_ERROR=$(mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" 2>&1)
-        MYSQL_EXIT_CODE=$?
-    else
-        MYSQL_ERROR=$(mysql -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -e "SELECT 1;" 2>&1)
-        MYSQL_EXIT_CODE=$?
-    fi
-    
-    if [ $MYSQL_EXIT_CODE -eq 0 ]; then
-        log_info "MySQL数据库连接正常"
-    else
-        log_error "MySQL数据库连接失败"
-        log_error "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
-        log_error "错误详情: $MYSQL_ERROR"
-        log_error "请检查："
-        log_error "1. MySQL服务是否运行"
-        log_error "2. 数据库连接参数是否正确"
-        log_error "3. 用户权限是否足够"
-        exit 1
-    fi
-    
-    # 检查Redis连接
-    log_step "检查Redis连接..."
-    REDIS_HOST=${REDIS_HOST:-localhost}
-    REDIS_PORT=${REDIS_PORT:-6379}
-    
-    log_info "尝试连接Redis: $REDIS_HOST:$REDIS_PORT"
-    REDIS_ERROR=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping 2>&1)
-    REDIS_EXIT_CODE=$?
-    
-    if [ $REDIS_EXIT_CODE -eq 0 ]; then
-        log_info "Redis连接正常"
-    else
-        log_error "Redis连接失败"
-        log_error "连接信息: $REDIS_HOST:$REDIS_PORT"
-        log_error "错误详情: $REDIS_ERROR"
-        exit 1
-    fi
+    log_step "检查数据库连接..."
+    log_info "使用云服务数据库，跳过本地数据库检查"
 }
 
 # 检查数据库表是否存在
@@ -268,14 +210,14 @@ create_database_tables() {
     log_step "创建数据库表..."
     
     # 执行数据库初始化脚本
-    if [ -f server/database/init.sql ]; then
-        log_info "执行数据库初始化脚本: server/database/init.sql"
+    if [ -f "$PROJECT_ROOT/server/database/init.sql" ]; then
+        log_info "执行数据库初始化脚本: $PROJECT_ROOT/server/database/init.sql"
         
         if [ -n "$MYSQL_PASSWORD" ]; then
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < server/database/init.sql 2>&1)
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1)
             MYSQL_INIT_EXIT_CODE=$?
         else
-            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < server/database/init.sql 2>&1)
+            MYSQL_INIT_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" < "$PROJECT_ROOT/server/database/init.sql" 2>&1)
             MYSQL_INIT_EXIT_CODE=$?
         fi
         
@@ -287,7 +229,7 @@ create_database_tables() {
             exit 1
         fi
     else
-        log_error "数据库初始化脚本不存在: server/database/init.sql"
+        log_error "数据库初始化脚本不存在: $PROJECT_ROOT/server/database/init.sql"
         exit 1
     fi
 }
@@ -317,10 +259,10 @@ check_database_schema_changes() {
     CURRENT_SCHEMA_MD5=$(echo "$CURRENT_SCHEMA" | md5sum | cut -d' ' -f1)
     
     # 计算期望架构的MD5（基于init.sql）
-    if [ -f server/database/init.sql ]; then
-        EXPECTED_SCHEMA_MD5=$(grep -E "CREATE TABLE|ADD COLUMN|MODIFY COLUMN" server/database/init.sql | md5sum | cut -d' ' -f1)
+    if [ -f "$PROJECT_ROOT/server/database/init.sql" ]; then
+        EXPECTED_SCHEMA_MD5=$(grep -E "CREATE TABLE|ADD COLUMN|MODIFY COLUMN" "$PROJECT_ROOT/server/database/init.sql" | md5sum | cut -d' ' -f1)
     else
-        log_error "数据库初始化脚本不存在: server/database/init.sql"
+        log_error "数据库初始化脚本不存在: $PROJECT_ROOT/server/database/init.sql"
         exit 1
     fi
     
@@ -340,8 +282,8 @@ update_database_schema() {
     log_step "更新数据库架构..."
     
     # 备份当前数据库结构
-    BACKUP_FILE="database/backups/schema_backup_$(date +%Y%m%d_%H%M%S).sql"
-    mkdir -p database/backups
+    BACKUP_FILE="$PROJECT_ROOT/database/backups/schema_backup_$(date +%Y%m%d_%H%M%S).sql"
+    mkdir -p "$PROJECT_ROOT/database/backups"
     
     log_info "备份当前数据库结构到: $BACKUP_FILE"
     if [ -n "$MYSQL_PASSWORD" ]; then
@@ -393,226 +335,6 @@ check_supervisor() {
     log_info "supervisor检查通过"
 }
 
-# 检查VPN依赖和连通性
-check_vpn_dependencies() {
-    log_step "检查VPN依赖和连通性..."
-    
-    # 检查OpenVPN是否安装
-    if ! command -v openvpn &> /dev/null; then
-        log_warn "OpenVPN未安装，VPN服务将无法启动"
-        log_info "安装命令: sudo apt-get install openvpn (Ubuntu/Debian)"
-        return 1
-    fi
-    
-    # 检查VPN配置文件是否存在
-    if [ ! -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
-        log_warn "VPN配置文件不存在: server/vpn/tun_autodl-gpu.ovpn"
-        return 1
-    fi
-    
-    # 检查TUN/TAP设备支持
-    check_tun_tap_support
-    
-    log_info "VPN依赖检查通过"
-    
-    # 检查VPN连通性
-    check_vpn_connectivity
-    
-    return 0
-}
-
-# 检查TUN/TAP设备支持
-check_tun_tap_support() {
-    log_step "检查TUN/TAP设备支持..."
-    
-    # 检查/dev/net/tun是否存在
-    if [ ! -c "/dev/net/tun" ]; then
-        log_warn "/dev/net/tun设备不存在"
-        
-        # 检查是否在容器环境中
-        if [ -f "/.dockerenv" ] || grep -q "docker\|lxc" /proc/1/cgroup 2>/dev/null; then
-            log_warn "检测到容器环境，TUN/TAP设备可能需要特殊配置"
-            log_info "容器启动建议："
-            log_info "  Docker: 添加 --cap-add=NET_ADMIN --device=/dev/net/tun"
-            log_info "  或使用: --privileged 参数"
-            
-            # 尝试创建TUN设备（需要特权）
-            if [ -w "/dev" ]; then
-                log_info "尝试创建TUN设备..."
-                if mkdir -p /dev/net 2>/dev/null && mknod /dev/net/tun c 10 200 2>/dev/null; then
-                    log_info "TUN设备创建成功"
-                    return 0
-                else
-                    log_warn "TUN设备创建失败，需要特权权限"
-                fi
-            fi
-        else
-            log_warn "非容器环境中TUN设备缺失，请检查系统配置"
-            log_info "可能的解决方案："
-            log_info "  1. 加载TUN模块: sudo modprobe tun"
-            log_info "  2. 创建设备: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200"
-        fi
-        
-        return 1
-    fi
-    
-    # 检查TUN设备权限
-    if [ ! -r "/dev/net/tun" ] || [ ! -w "/dev/net/tun" ]; then
-        log_warn "TUN设备权限不足"
-        log_info "修复权限: sudo chmod 666 /dev/net/tun"
-        return 1
-    fi
-    
-    # 检查TUN模块是否加载
-    if ! lsmod | grep -q "^tun " 2>/dev/null; then
-        log_warn "TUN内核模块未加载"
-        log_info "加载模块: sudo modprobe tun"
-        
-        # 尝试自动加载模块
-        if [ -w "/proc/sys" ]; then
-            modprobe tun 2>/dev/null && log_info "TUN模块加载成功" || log_warn "TUN模块加载失败"
-        fi
-    fi
-    
-    log_info "TUN/TAP设备支持检查完成"
-    return 0
-}
-
-# 检查VPN连通性
-check_vpn_connectivity() {
-    log_step "检查VPN连通性..."
-    
-    # 检查是否已有VPN连接
-    VPN_INTERFACE=$(ip route | grep -E "tun[0-9]+" | head -1 | awk '{print $3}' 2>/dev/null)
-    
-    if [ -n "$VPN_INTERFACE" ]; then
-        log_info "检测到VPN接口: $VPN_INTERFACE"
-        
-        # 获取VPN网关IP
-        VPN_GATEWAY=$(ip route | grep "$VPN_INTERFACE" | grep -E "^default|^0\.0\.0\.0" | awk '{print $3}' | head -1 2>/dev/null)
-        
-        if [ -n "$VPN_GATEWAY" ]; then
-            log_info "VPN网关: $VPN_GATEWAY"
-            
-            # 测试VPN网关连通性
-            log_info "测试VPN网关连通性..."
-            if ping -c 3 -W 5 "$VPN_GATEWAY" >/dev/null 2>&1; then
-                log_info "VPN网关连通性测试通过"
-                
-                # 测试外网连通性（通过VPN）
-                log_info "测试外网连通性（通过VPN）..."
-                if ping -c 3 -W 5 8.8.8.8 >/dev/null 2>&1; then
-                    log_info "VPN外网连通性测试通过"
-                    return 0
-                else
-                    log_warn "VPN外网连通性测试失败"
-                    return 1
-                fi
-            else
-                log_warn "VPN网关连通性测试失败"
-                return 1
-            fi
-        else
-            log_warn "无法获取VPN网关信息"
-            return 1
-        fi
-    else
-        log_info "未检测到活动的VPN连接"
-        
-        # 尝试测试VPN配置文件
-        if [ -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
-            log_info "尝试测试VPN配置文件..."
-            
-            # 首先检查配置文件语法（不实际连接）
-            VPN_SYNTAX_CHECK=$(openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 1 --show-ciphers --show-digests 2>&1 | head -5)
-            
-            # 检查配置文件是否可读
-            if [ ! -r "server/vpn/tun_autodl-gpu.ovpn" ]; then
-                log_warn "VPN配置文件不可读"
-                return 1
-            fi
-            
-            log_info "VPN配置文件可读性检查通过"
-            
-            # 尝试短暂连接测试（非daemon模式，便于观察输出）
-            log_info "尝试VPN连接测试（10秒超时）..."
-            
-            # 创建临时日志文件
-            VPN_TEST_LOG="/tmp/vpn_test_$$.log"
-            
-            # 启动VPN连接测试（后台运行，但不使用daemon模式）
-            timeout 10 openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 3 --connect-timeout 8 > "$VPN_TEST_LOG" 2>&1 &
-            VPN_TEST_PID=$!
-            
-            # 等待连接尝试
-            sleep 8
-            
-            # 检查进程是否还在运行
-            if kill -0 $VPN_TEST_PID 2>/dev/null; then
-                # 进程还在运行，检查是否建立了连接
-                if grep -q "Initialization Sequence Completed" "$VPN_TEST_LOG" 2>/dev/null; then
-                    log_info "VPN连接测试成功"
-                    kill $VPN_TEST_PID 2>/dev/null
-                    rm -f "$VPN_TEST_LOG"
-                    return 0
-                elif grep -q "TUN/TAP device" "$VPN_TEST_LOG" 2>/dev/null; then
-                    log_info "VPN设备创建成功，连接正在建立"
-                    kill $VPN_TEST_PID 2>/dev/null
-                    rm -f "$VPN_TEST_LOG"
-                    return 0
-                else
-                    log_warn "VPN连接测试超时，可能需要更长时间建立连接"
-                    kill $VPN_TEST_PID 2>/dev/null
-                fi
-            fi
-            
-            # 分析测试日志
-             if [ -f "$VPN_TEST_LOG" ]; then
-                 log_info "VPN测试日志分析："
-                 
-                 if grep -q "Cannot open TUN/TAP dev" "$VPN_TEST_LOG"; then
-                     log_warn "TUN/TAP设备无法打开，这是容器环境的常见问题"
-                     log_info "解决方案："
-                     log_info "  1. Docker启动时添加: --cap-add=NET_ADMIN --device=/dev/net/tun"
-                     log_info "  2. 或使用特权模式: --privileged"
-                     log_info "  3. 检查宿主机TUN模块: sudo modprobe tun"
-                 elif grep -q "AUTH_FAILED" "$VPN_TEST_LOG"; then
-                     log_warn "VPN认证失败，请检查用户名密码"
-                 elif grep -q "RESOLVE" "$VPN_TEST_LOG"; then
-                     log_warn "VPN服务器域名解析失败，请检查网络连接"
-                 elif grep -q "Connection refused" "$VPN_TEST_LOG"; then
-                     log_warn "VPN服务器连接被拒绝，请检查服务器状态"
-                 elif grep -q "Network is unreachable" "$VPN_TEST_LOG"; then
-                     log_warn "网络不可达，请检查网络连接"
-                 elif grep -q "certificate" "$VPN_TEST_LOG"; then
-                     log_warn "VPN证书问题，请检查配置文件"
-                 elif grep -q "No server certificate verification" "$VPN_TEST_LOG"; then
-                     log_info "VPN配置缺少服务器证书验证（安全警告）"
-                     log_info "建议在配置文件中添加: remote-cert-tls server"
-                 else
-                     log_warn "VPN连接测试未成功，但配置文件格式正确"
-                     log_info "这可能是正常的，VPN可能需要认证或网络环境限制"
-                 fi
-                
-                # 显示最后几行日志用于调试
-                log_info "VPN测试日志（最后5行）："
-                tail -5 "$VPN_TEST_LOG" 2>/dev/null | while read line; do
-                    log_info "  $line"
-                done
-                
-                rm -f "$VPN_TEST_LOG"
-            fi
-            
-            # VPN测试不成功不应该阻止服务启动，只是警告
-            log_warn "VPN连接测试未完全成功，但不影响服务启动"
-            return 0
-        else
-            log_warn "VPN配置文件不存在，无法进行连通性测试"
-            return 1
-        fi
-    fi
-}
-
 # 启动supervisor守护进程
 start_supervisord() {
     log_step "启动supervisor守护进程..."
@@ -640,13 +362,12 @@ start_supervisord() {
     export SUPERVISOR_LOG_BACKUPS="${SUPERVISOR_LOG_BACKUPS:-10}"
     export SUPERVISOR_API_PRIORITY="${SUPERVISOR_API_PRIORITY:-100}"
     export SUPERVISOR_WORKER_PRIORITY="${SUPERVISOR_WORKER_PRIORITY:-200}"
-    export SUPERVISOR_VPN_PRIORITY="${SUPERVISOR_VPN_PRIORITY:-50}"
     export SUPERVISOR_USER="${SUPERVISOR_USER:-www-data}"
-    export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-$(pwd)}"
+    export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-$PROJECT_ROOT}"
     
     # 启动supervisord，使用绝对路径配置文件
     log_info "启动supervisor守护进程..."
-    SUPERVISORD_ERROR=$(supervisord -c "$(pwd)/server/supervisor/supervisord.conf" 2>&1)
+    SUPERVISORD_ERROR=$(supervisord -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" 2>&1)
     SUPERVISORD_EXIT_CODE=$?
     
     if [ $SUPERVISORD_EXIT_CODE -eq 0 ]; then
@@ -718,12 +439,12 @@ check_services() {
         fi
     done
     
-    # 检查VPN连接状态
-    log_info "检查VPN连接状态..."
-    if ip route | grep -q "tun_autodl-gpu"; then
-        log_info "✓ VPN连接正常"
+    # 检查服务状态
+    log_info "检查服务状态..."
+    if supervisorctl status | grep -q "RUNNING"; then
+        log_info "✓ 服务运行正常"
     else
-        log_warn "✗ VPN连接异常或未建立"
+        log_warn "✗ 部分服务可能异常"
     fi
     
     # 检查API服务器健康状态
@@ -805,7 +526,7 @@ show_help() {
     echo "用法: $0 [命令]"
     echo ""
     echo "命令:"
-    echo "  start                 启动所有服务 (包括TTS API、任务处理器、VPN)"
+    echo "  start                 启动所有服务 (包括TTS API、任务处理器)"
     echo "  stop                  停止所有服务"
     echo "  restart               重启所有服务"
     echo "  status                检查服务状态"
@@ -816,7 +537,7 @@ show_help() {
     echo "服务组件:"
     echo "  - TTS API服务器       提供语音合成API接口"
     echo "  - TTS任务处理器       处理长文本语音合成任务"
-    echo "  - VPN服务            自动连接VPN网络"
+
     echo ""
     echo "示例:"
     echo "  $0 start              # 启动所有服务"
@@ -825,7 +546,7 @@ show_help() {
     echo "  $0 status             # 检查服务状态"
     echo "  $0 supervisor         # 查看supervisor状态"
     echo "  $0 supervisor restart tts-api-server  # 重启API服务器"
-    echo "  $0 supervisor restart vpn-service     # 重启VPN服务"
+    echo "  $0 supervisor restart tts-api-server     # 重启API服务器"
 }
 
 # 查看日志
@@ -833,26 +554,26 @@ show_logs() {
     log_step "显示服务日志..."
     
     echo "=== API服务器日志 ==="
-    if [ -f logs/api_server.log ]; then
-        tail -n 50 logs/api_server.log
+    if [ -f "$PROJECT_ROOT/logs/api_server.log" ]; then
+        tail -n 50 "$PROJECT_ROOT/logs/api_server.log"
     else
         echo "API服务器日志文件不存在"
     fi
     
     echo ""
     echo "=== 任务处理器日志 ==="
-    if [ -f logs/worker_long.log ]; then
-        tail -n 50 logs/worker_long.log
+    if [ -f "$PROJECT_ROOT/logs/worker_long.log" ]; then
+        tail -n 50 "$PROJECT_ROOT/logs/worker_long.log"
     else
         echo "任务处理器日志文件不存在"
     fi
     
     echo ""
-    echo "=== VPN服务日志 ==="
-    if [ -f logs/vpn.log ]; then
-        tail -n 50 logs/vpn.log
+    echo "=== 服务日志 ==="
+    if [ -f "$PROJECT_ROOT/logs/tts_api.log" ]; then
+        tail -n 50 "$PROJECT_ROOT/logs/tts_api.log"
     else
-        echo "VPN服务日志文件不存在"
+        echo "服务日志文件不存在"
     fi
 }
 
@@ -866,7 +587,6 @@ main() {
             check_supervisor # 检查supervisor是否安装
             install_python_dependencies # 安装Python依赖
             
-            check_vpn_dependencies # 检查VPN依赖
             start_supervisord # 启动supervisor守护进程
             
             check_database # 检查数据库连接
