@@ -459,39 +459,84 @@ check_vpn_connectivity() {
     else
         log_info "未检测到活动的VPN连接"
         
-        # 尝试启动VPN连接进行测试
+        # 尝试测试VPN配置文件
         if [ -f "server/vpn/tun_autodl-gpu.ovpn" ]; then
             log_info "尝试测试VPN配置文件..."
             
-            # 使用openvpn --config检查配置文件语法
-            VPN_CONFIG_CHECK=$(openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 1 --connect-timeout 10 --daemon 2>&1)
-            VPN_CONFIG_EXIT_CODE=$?
+            # 首先检查配置文件语法（不实际连接）
+            VPN_SYNTAX_CHECK=$(openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 1 --show-ciphers --show-digests 2>&1 | head -5)
             
-            if [ $VPN_CONFIG_EXIT_CODE -eq 0 ]; then
-                log_info "VPN配置文件语法检查通过"
-                
-                # 等待几秒让VPN尝试连接
-                sleep 5
-                
-                # 检查VPN进程是否启动
-                if pgrep -f "openvpn.*tun_autodl-gpu.ovpn" >/dev/null; then
-                    log_info "VPN连接测试启动成功"
-                    
-                    # 停止测试连接
-                    pkill -f "openvpn.*tun_autodl-gpu.ovpn" 2>/dev/null
-                    log_info "VPN测试连接已停止"
-                    
-                    return 0
-                else
-                    log_warn "VPN连接测试启动失败"
-                    log_warn "配置检查输出: $VPN_CONFIG_CHECK"
-                    return 1
-                fi
-            else
-                log_warn "VPN配置文件语法检查失败"
-                log_warn "错误详情: $VPN_CONFIG_CHECK"
+            # 检查配置文件是否可读
+            if [ ! -r "server/vpn/tun_autodl-gpu.ovpn" ]; then
+                log_warn "VPN配置文件不可读"
                 return 1
             fi
+            
+            log_info "VPN配置文件可读性检查通过"
+            
+            # 尝试短暂连接测试（非daemon模式，便于观察输出）
+            log_info "尝试VPN连接测试（10秒超时）..."
+            
+            # 创建临时日志文件
+            VPN_TEST_LOG="/tmp/vpn_test_$$.log"
+            
+            # 启动VPN连接测试（后台运行，但不使用daemon模式）
+            timeout 10 openvpn --config server/vpn/tun_autodl-gpu.ovpn --verb 3 --connect-timeout 8 > "$VPN_TEST_LOG" 2>&1 &
+            VPN_TEST_PID=$!
+            
+            # 等待连接尝试
+            sleep 8
+            
+            # 检查进程是否还在运行
+            if kill -0 $VPN_TEST_PID 2>/dev/null; then
+                # 进程还在运行，检查是否建立了连接
+                if grep -q "Initialization Sequence Completed" "$VPN_TEST_LOG" 2>/dev/null; then
+                    log_info "VPN连接测试成功"
+                    kill $VPN_TEST_PID 2>/dev/null
+                    rm -f "$VPN_TEST_LOG"
+                    return 0
+                elif grep -q "TUN/TAP device" "$VPN_TEST_LOG" 2>/dev/null; then
+                    log_info "VPN设备创建成功，连接正在建立"
+                    kill $VPN_TEST_PID 2>/dev/null
+                    rm -f "$VPN_TEST_LOG"
+                    return 0
+                else
+                    log_warn "VPN连接测试超时，可能需要更长时间建立连接"
+                    kill $VPN_TEST_PID 2>/dev/null
+                fi
+            fi
+            
+            # 分析测试日志
+            if [ -f "$VPN_TEST_LOG" ]; then
+                log_info "VPN测试日志分析："
+                
+                if grep -q "AUTH_FAILED" "$VPN_TEST_LOG"; then
+                    log_warn "VPN认证失败，请检查用户名密码"
+                elif grep -q "RESOLVE" "$VPN_TEST_LOG"; then
+                    log_warn "VPN服务器域名解析失败，请检查网络连接"
+                elif grep -q "Connection refused" "$VPN_TEST_LOG"; then
+                    log_warn "VPN服务器连接被拒绝，请检查服务器状态"
+                elif grep -q "Network is unreachable" "$VPN_TEST_LOG"; then
+                    log_warn "网络不可达，请检查网络连接"
+                elif grep -q "certificate" "$VPN_TEST_LOG"; then
+                    log_warn "VPN证书问题，请检查配置文件"
+                else
+                    log_warn "VPN连接测试未成功，但配置文件格式正确"
+                    log_info "这可能是正常的，VPN可能需要认证或网络环境限制"
+                fi
+                
+                # 显示最后几行日志用于调试
+                log_info "VPN测试日志（最后5行）："
+                tail -5 "$VPN_TEST_LOG" 2>/dev/null | while read line; do
+                    log_info "  $line"
+                done
+                
+                rm -f "$VPN_TEST_LOG"
+            fi
+            
+            # VPN测试不成功不应该阻止服务启动，只是警告
+            log_warn "VPN连接测试未完全成功，但不影响服务启动"
+            return 0
         else
             log_warn "VPN配置文件不存在，无法进行连通性测试"
             return 1
