@@ -117,24 +117,24 @@ install_services() {
         if command -v apt-get &> /dev/null; then
             if ! check_mysql_installed; then
                 log_info "安装MySQL..."
-                sudo apt-get update
-                sudo apt-get install -y mysql-server
+                apt-get update
+                apt-get install -y mysql-server
             fi
             
             if ! check_redis_installed; then
                 log_info "安装Redis..."
-                sudo apt-get update
-                sudo apt-get install -y redis-server
+                apt-get update
+                apt-get install -y redis-server
             fi
         elif command -v yum &> /dev/null; then
             if ! check_mysql_installed; then
                 log_info "安装MySQL..."
-                sudo yum install -y mysql-server
+                yum install -y mysql-server
             fi
             
             if ! check_redis_installed; then
                 log_info "安装Redis..."
-                sudo yum install -y redis
+                yum install -y redis
             fi
         else
             log_error "不支持的Linux发行版"
@@ -159,9 +159,9 @@ start_services() {
                 brew services start mysql
             elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
                 if command -v systemctl &> /dev/null; then
-                    sudo systemctl start mysql || sudo systemctl start mysqld
+                    systemctl start mysql || systemctl start mysqld
                 elif command -v service &> /dev/null; then
-                    sudo service mysql start || sudo service mysqld start
+                    service mysql start || service mysqld start
                 fi
             fi
             log_info "MySQL服务已启动"
@@ -179,9 +179,9 @@ start_services() {
                 brew services start redis
             elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
                 if command -v systemctl &> /dev/null; then
-                    sudo systemctl start redis
+                    systemctl start redis
                 elif command -v service &> /dev/null; then
-                    sudo service redis-server start
+                    service redis-server start
                 fi
             fi
             log_info "Redis服务已启动"
@@ -203,9 +203,9 @@ stop_services() {
             brew services stop mysql
         elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
             if command -v systemctl &> /dev/null; then
-                sudo systemctl stop mysql || sudo systemctl stop mysqld
+                systemctl stop mysql || systemctl stop mysqld
             elif command -v service &> /dev/null; then
-                sudo service mysql stop || sudo service mysqld stop
+                service mysql stop || service mysqld stop
             fi
         fi
         log_info "MySQL服务已停止"
@@ -219,9 +219,9 @@ stop_services() {
             brew services stop redis
         elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
             if command -v systemctl &> /dev/null; then
-                sudo systemctl stop redis
+                systemctl stop redis
             elif command -v service &> /dev/null; then
-                sudo service redis-server stop
+                service redis-server stop
             fi
         fi
         log_info "Redis服务已停止"
