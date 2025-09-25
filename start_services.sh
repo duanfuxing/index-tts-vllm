@@ -410,11 +410,71 @@ check_vpn_dependencies() {
         return 1
     fi
     
+    # 检查TUN/TAP设备支持
+    check_tun_tap_support
+    
     log_info "VPN依赖检查通过"
     
     # 检查VPN连通性
     check_vpn_connectivity
     
+    return 0
+}
+
+# 检查TUN/TAP设备支持
+check_tun_tap_support() {
+    log_step "检查TUN/TAP设备支持..."
+    
+    # 检查/dev/net/tun是否存在
+    if [ ! -c "/dev/net/tun" ]; then
+        log_warn "/dev/net/tun设备不存在"
+        
+        # 检查是否在容器环境中
+        if [ -f "/.dockerenv" ] || grep -q "docker\|lxc" /proc/1/cgroup 2>/dev/null; then
+            log_warn "检测到容器环境，TUN/TAP设备可能需要特殊配置"
+            log_info "容器启动建议："
+            log_info "  Docker: 添加 --cap-add=NET_ADMIN --device=/dev/net/tun"
+            log_info "  或使用: --privileged 参数"
+            
+            # 尝试创建TUN设备（需要特权）
+            if [ -w "/dev" ]; then
+                log_info "尝试创建TUN设备..."
+                if mkdir -p /dev/net 2>/dev/null && mknod /dev/net/tun c 10 200 2>/dev/null; then
+                    log_info "TUN设备创建成功"
+                    return 0
+                else
+                    log_warn "TUN设备创建失败，需要特权权限"
+                fi
+            fi
+        else
+            log_warn "非容器环境中TUN设备缺失，请检查系统配置"
+            log_info "可能的解决方案："
+            log_info "  1. 加载TUN模块: sudo modprobe tun"
+            log_info "  2. 创建设备: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200"
+        fi
+        
+        return 1
+    fi
+    
+    # 检查TUN设备权限
+    if [ ! -r "/dev/net/tun" ] || [ ! -w "/dev/net/tun" ]; then
+        log_warn "TUN设备权限不足"
+        log_info "修复权限: sudo chmod 666 /dev/net/tun"
+        return 1
+    fi
+    
+    # 检查TUN模块是否加载
+    if ! lsmod | grep -q "^tun " 2>/dev/null; then
+        log_warn "TUN内核模块未加载"
+        log_info "加载模块: sudo modprobe tun"
+        
+        # 尝试自动加载模块
+        if [ -w "/proc/sys" ]; then
+            modprobe tun 2>/dev/null && log_info "TUN模块加载成功" || log_warn "TUN模块加载失败"
+        fi
+    fi
+    
+    log_info "TUN/TAP设备支持检查完成"
     return 0
 }
 
@@ -507,23 +567,32 @@ check_vpn_connectivity() {
             fi
             
             # 分析测试日志
-            if [ -f "$VPN_TEST_LOG" ]; then
-                log_info "VPN测试日志分析："
-                
-                if grep -q "AUTH_FAILED" "$VPN_TEST_LOG"; then
-                    log_warn "VPN认证失败，请检查用户名密码"
-                elif grep -q "RESOLVE" "$VPN_TEST_LOG"; then
-                    log_warn "VPN服务器域名解析失败，请检查网络连接"
-                elif grep -q "Connection refused" "$VPN_TEST_LOG"; then
-                    log_warn "VPN服务器连接被拒绝，请检查服务器状态"
-                elif grep -q "Network is unreachable" "$VPN_TEST_LOG"; then
-                    log_warn "网络不可达，请检查网络连接"
-                elif grep -q "certificate" "$VPN_TEST_LOG"; then
-                    log_warn "VPN证书问题，请检查配置文件"
-                else
-                    log_warn "VPN连接测试未成功，但配置文件格式正确"
-                    log_info "这可能是正常的，VPN可能需要认证或网络环境限制"
-                fi
+             if [ -f "$VPN_TEST_LOG" ]; then
+                 log_info "VPN测试日志分析："
+                 
+                 if grep -q "Cannot open TUN/TAP dev" "$VPN_TEST_LOG"; then
+                     log_warn "TUN/TAP设备无法打开，这是容器环境的常见问题"
+                     log_info "解决方案："
+                     log_info "  1. Docker启动时添加: --cap-add=NET_ADMIN --device=/dev/net/tun"
+                     log_info "  2. 或使用特权模式: --privileged"
+                     log_info "  3. 检查宿主机TUN模块: sudo modprobe tun"
+                 elif grep -q "AUTH_FAILED" "$VPN_TEST_LOG"; then
+                     log_warn "VPN认证失败，请检查用户名密码"
+                 elif grep -q "RESOLVE" "$VPN_TEST_LOG"; then
+                     log_warn "VPN服务器域名解析失败，请检查网络连接"
+                 elif grep -q "Connection refused" "$VPN_TEST_LOG"; then
+                     log_warn "VPN服务器连接被拒绝，请检查服务器状态"
+                 elif grep -q "Network is unreachable" "$VPN_TEST_LOG"; then
+                     log_warn "网络不可达，请检查网络连接"
+                 elif grep -q "certificate" "$VPN_TEST_LOG"; then
+                     log_warn "VPN证书问题，请检查配置文件"
+                 elif grep -q "No server certificate verification" "$VPN_TEST_LOG"; then
+                     log_info "VPN配置缺少服务器证书验证（安全警告）"
+                     log_info "建议在配置文件中添加: remote-cert-tls server"
+                 else
+                     log_warn "VPN连接测试未成功，但配置文件格式正确"
+                     log_info "这可能是正常的，VPN可能需要认证或网络环境限制"
+                 fi
                 
                 # 显示最后几行日志用于调试
                 log_info "VPN测试日志（最后5行）："
