@@ -180,18 +180,42 @@ check_database_tables() {
     log_info "检查tts_tasks表..."
     TTS_TASKS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null) || TTS_TASKS_EXISTS="0"
+        TTS_TASKS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            TTS_TASKS_EXISTS="$TTS_TASKS_RESULT"
+        else
+            log_warn "检查tts_tasks表时出错: $TTS_TASKS_RESULT"
+            TTS_TASKS_EXISTS="0"
+        fi
     else
-        TTS_TASKS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null) || TTS_TASKS_EXISTS="0"
+        TTS_TASKS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            TTS_TASKS_EXISTS="$TTS_TASKS_RESULT"
+        else
+            log_warn "检查tts_tasks表时出错: $TTS_TASKS_RESULT"
+            TTS_TASKS_EXISTS="0"
+        fi
     fi
     
     # 检查voice_configs表是否存在
     log_info "检查voice_configs表..."
     VOICE_CONFIGS_EXISTS="0"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null) || VOICE_CONFIGS_EXISTS="0"
+        VOICE_CONFIGS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            VOICE_CONFIGS_EXISTS="$VOICE_CONFIGS_RESULT"
+        else
+            log_warn "检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
+            VOICE_CONFIGS_EXISTS="0"
+        fi
     else
-        VOICE_CONFIGS_EXISTS=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>/dev/null) || VOICE_CONFIGS_EXISTS="0"
+        VOICE_CONFIGS_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'voice_configs';" -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            VOICE_CONFIGS_EXISTS="$VOICE_CONFIGS_RESULT"
+        else
+            log_warn "检查voice_configs表时出错: $VOICE_CONFIGS_RESULT"
+            VOICE_CONFIGS_EXISTS="0"
+        fi
     fi
     
     log_info "表存在性检查结果: tts_tasks=$TTS_TASKS_EXISTS, voice_configs=$VOICE_CONFIGS_EXISTS"
@@ -242,19 +266,31 @@ check_database_schema_changes() {
     
     # 生成当前表结构的校验和
     if [ -n "$MYSQL_PASSWORD" ]; then
-        CURRENT_SCHEMA=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "
+        CURRENT_SCHEMA_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "
             SELECT CONCAT(table_name, ':', column_name, ':', data_type, ':', is_nullable, ':', column_default) 
             FROM information_schema.columns 
             WHERE table_schema = DATABASE() AND table_name IN ('tts_tasks', 'voice_configs') 
             ORDER BY table_name, ordinal_position;
-        " -s -N 2>/dev/null)
+        " -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            CURRENT_SCHEMA="$CURRENT_SCHEMA_RESULT"
+        else
+            log_error "获取当前数据库架构失败: $CURRENT_SCHEMA_RESULT"
+            exit 1
+        fi
     else
-        CURRENT_SCHEMA=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "
+        CURRENT_SCHEMA_RESULT=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "
             SELECT CONCAT(table_name, ':', column_name, ':', data_type, ':', is_nullable, ':', column_default) 
             FROM information_schema.columns 
             WHERE table_schema = DATABASE() AND table_name IN ('tts_tasks', 'voice_configs') 
             ORDER BY table_name, ordinal_position;
-        " -s -N 2>/dev/null)
+        " -s -N 2>&1)
+        if [ $? -eq 0 ]; then
+            CURRENT_SCHEMA="$CURRENT_SCHEMA_RESULT"
+        else
+            log_error "获取当前数据库架构失败: $CURRENT_SCHEMA_RESULT"
+            exit 1
+        fi
     fi
     
     # 计算当前架构的MD5
@@ -289,15 +325,25 @@ update_database_schema() {
     
     log_info "备份当前数据库结构到: $BACKUP_FILE"
     if [ -n "$MYSQL_PASSWORD" ]; then
-        mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --no-data "$MYSQL_DATABASE" > "$BACKUP_FILE" 2>/dev/null
+        BACKUP_RESULT=$(mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --no-data "$MYSQL_DATABASE" 2>&1)
+        BACKUP_EXIT_CODE=$?
+        if [ $BACKUP_EXIT_CODE -eq 0 ]; then
+            echo "$BACKUP_RESULT" > "$BACKUP_FILE"
+            log_info "数据库结构备份完成"
+        else
+            log_warn "数据库结构备份失败，但继续执行更新"
+            log_warn "备份错误详情: $BACKUP_RESULT"
+        fi
     else
-        mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --no-data "$MYSQL_DATABASE" > "$BACKUP_FILE" 2>/dev/null
-    fi
-    
-    if [ $? -eq 0 ]; then
-        log_info "数据库结构备份完成"
-    else
-        log_warn "数据库结构备份失败，但继续执行更新"
+        BACKUP_RESULT=$(mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --no-data "$MYSQL_DATABASE" 2>&1)
+        BACKUP_EXIT_CODE=$?
+        if [ $BACKUP_EXIT_CODE -eq 0 ]; then
+            echo "$BACKUP_RESULT" > "$BACKUP_FILE"
+            log_info "数据库结构备份完成"
+        else
+            log_warn "数据库结构备份失败，但继续执行更新"
+            log_warn "备份错误详情: $BACKUP_RESULT"
+        fi
     fi
     
     # 执行架构更新（重新运行init.sql）
@@ -386,24 +432,77 @@ start_supervisord() {
 start_services() {
     log_step "通过supervisor启动TTS服务组件..."
     
-    # 检查服务是否已经在运行
-    if supervisorctl status tts-services:* 2>/dev/null | grep -q "RUNNING"; then
-        log_info "部分服务已在运行，检查状态..."
-        supervisorctl status tts-services:*
+    # 获取当前服务状态
+    log_info "检查当前服务状态..."
+    SERVICES_STATUS=$(supervisorctl status tts-services:* 2>&1)
+    SERVICES_STATUS_EXIT_CODE=$?
+    
+    if [ $SERVICES_STATUS_EXIT_CODE -ne 0 ]; then
+        log_error "无法获取服务状态，supervisor可能未运行"
+        log_error "错误详情: $SERVICES_STATUS"
+        exit 1
+    fi
+    
+    # 详细分析每个服务的状态
+    log_info "当前服务状态详情:"
+    echo "$SERVICES_STATUS" | while read line; do
+        if [ -n "$line" ]; then
+            service_name=$(echo "$line" | awk '{print $1}')
+            service_status=$(echo "$line" | awk '{print $2}')
+            
+            case "$service_status" in
+                "RUNNING")
+                    log_info "  ✓ $service_name: 正在运行"
+                    ;;
+                "STOPPED")
+                    log_warn "  ✗ $service_name: 已停止"
+                    ;;
+                "FATAL"|"EXITED"|"BACKOFF")
+                    log_error "  ✗ $service_name: 状态异常 ($service_status)"
+                    ;;
+                *)
+                    log_warn "  ? $service_name: 未知状态 ($service_status)"
+                    ;;
+            esac
+        fi
+    done
+    
+    # 检查是否有服务需要启动
+    STOPPED_SERVICES=$(echo "$SERVICES_STATUS" | grep -E "STOPPED|FATAL|EXITED" | awk '{print $1}')
+    RUNNING_SERVICES=$(echo "$SERVICES_STATUS" | grep "RUNNING" | awk '{print $1}')
+    
+    if [ -n "$RUNNING_SERVICES" ]; then
+        log_info "已运行的服务:"
+        echo "$RUNNING_SERVICES" | while read service; do
+            log_info "  - $service"
+        done
+    fi
+    
+    if [ -n "$STOPPED_SERVICES" ]; then
+        log_info "需要启动的服务:"
+        echo "$STOPPED_SERVICES" | while read service; do
+            log_info "  - $service"
+        done
         
-        # 只启动未运行的服务
-        supervisorctl status tts-services:* | grep -v "RUNNING" | awk '{print $1}' | while read service; do
+        # 启动停止的服务
+        log_info "启动停止的服务..."
+        echo "$STOPPED_SERVICES" | while read service; do
             if [ -n "$service" ]; then
                 log_info "启动服务: $service"
-                supervisorctl start "$service" || true
+                START_RESULT=$(supervisorctl start "$service" 2>&1)
+                START_EXIT_CODE=$?
+                if [ $START_EXIT_CODE -eq 0 ]; then
+                    log_info "  ✓ $service 启动成功"
+                else
+                    log_error "  ✗ $service 启动失败"
+                    log_error "  错误详情: $START_RESULT"
+                fi
             fi
         done
-        SUPERVISOR_START_EXIT_CODE=$?
+        SUPERVISOR_START_EXIT_CODE=0
     else
-        # 启动TTS服务组
-        log_info "启动所有TTS服务组件..."
-        SUPERVISOR_START_ERROR=$(supervisorctl start tts-services:* 2>&1) || true
-        SUPERVISOR_START_EXIT_CODE=$?
+        log_info "所有服务都已在运行，无需启动"
+        SUPERVISOR_START_EXIT_CODE=0
     fi
     
     if [ $SUPERVISOR_START_EXIT_CODE -eq 0 ]; then
@@ -421,26 +520,148 @@ check_services() {
     log_step "检查服务状态..."
     
     # 检查supervisor守护进程
-    if ! supervisorctl status > /dev/null 2>&1; then
+    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    if [ $? -ne 0 ]; then
         log_warn "✗ supervisor守护进程未运行"
+        log_warn "错误详情: $SUPERVISOR_STATUS"
         # 尝试启动supervisor
         log_info "尝试启动supervisor守护进程..."
         start_supervisor_daemon || true
+        return 1
     else
         log_info "✓ supervisor守护进程运行正常"
-        
-        # 检查所有服务组件状态
-        log_info "服务组件状态:"
-        supervisorctl status tts-services:* | while read line; do
-            if echo "$line" | grep -q "RUNNING"; then
-                service_name=$(echo "$line" | awk '{print $1}')
-                log_info "  ✓ $service_name 运行正常"
-            elif echo "$line" | grep -q "STOPPED\|FATAL\|EXITED"; then
-                service_name=$(echo "$line" | awk '{print $1}')
-                status=$(echo "$line" | awk '{print $2}')
-                log_warn "  ✗ $service_name 状态异常: $status"
-            fi
-        done
+    fi
+    
+    # 获取详细的服务状态
+    log_info "获取详细服务状态..."
+    SERVICES_STATUS=$(supervisorctl status tts-services:* 2>&1)
+    SERVICES_STATUS_EXIT_CODE=$?
+    
+    if [ $SERVICES_STATUS_EXIT_CODE -ne 0 ]; then
+        log_error "无法获取服务状态"
+        log_error "错误详情: $SERVICES_STATUS"
+        return 1
+    fi
+    
+    # 分析每个服务的详细状态
+    log_info "===== 详细服务状态 ====="
+    
+    RUNNING_COUNT=0
+    STOPPED_COUNT=0
+    ERROR_COUNT=0
+    TOTAL_COUNT=0
+    
+    echo "$SERVICES_STATUS" | while read line; do
+        if [ -n "$line" ]; then
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+            service_name=$(echo "$line" | awk '{print $1}')
+            service_status=$(echo "$line" | awk '{print $2}')
+            service_info=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/[[:space:]]*$//')
+            
+            case "$service_status" in
+                "RUNNING")
+                    RUNNING_COUNT=$((RUNNING_COUNT + 1))
+                    log_info "  ✓ $service_name: 正在运行"
+                    if [ -n "$service_info" ]; then
+                        log_info "    详情: $service_info"
+                    fi
+                    ;;
+                "STOPPED")
+                    STOPPED_COUNT=$((STOPPED_COUNT + 1))
+                    log_warn "  ✗ $service_name: 已停止"
+                    if [ -n "$service_info" ]; then
+                        log_warn "    详情: $service_info"
+                    fi
+                    ;;
+                "FATAL")
+                    ERROR_COUNT=$((ERROR_COUNT + 1))
+                    log_error "  ✗ $service_name: 致命错误"
+                    if [ -n "$service_info" ]; then
+                        log_error "    详情: $service_info"
+                    fi
+                    ;;
+                "EXITED")
+                    ERROR_COUNT=$((ERROR_COUNT + 1))
+                    log_error "  ✗ $service_name: 已退出"
+                    if [ -n "$service_info" ]; then
+                        log_error "    详情: $service_info"
+                    fi
+                    ;;
+                "BACKOFF")
+                    ERROR_COUNT=$((ERROR_COUNT + 1))
+                    log_error "  ✗ $service_name: 启动失败，正在重试"
+                    if [ -n "$service_info" ]; then
+                        log_error "    详情: $service_info"
+                    fi
+                    ;;
+                "STARTING")
+                    log_info "  ⏳ $service_name: 正在启动"
+                    if [ -n "$service_info" ]; then
+                        log_info "    详情: $service_info"
+                    fi
+                    ;;
+                *)
+                    log_warn "  ? $service_name: 未知状态 ($service_status)"
+                    if [ -n "$service_info" ]; then
+                        log_warn "    详情: $service_info"
+                    fi
+                    ;;
+            esac
+        fi
+    done
+    
+    # 显示服务状态统计
+    TOTAL_SERVICES=$(echo "$SERVICES_STATUS" | wc -l | tr -d ' ')
+    RUNNING_SERVICES=$(echo "$SERVICES_STATUS" | grep "RUNNING" | wc -l | tr -d ' ')
+    STOPPED_SERVICES=$(echo "$SERVICES_STATUS" | grep -E "STOPPED|FATAL|EXITED|BACKOFF" | wc -l | tr -d ' ')
+    
+    log_info "===== 服务状态统计 ====="
+    log_info "总服务数: $TOTAL_SERVICES"
+    log_info "运行中: $RUNNING_SERVICES"
+    log_info "停止/异常: $STOPPED_SERVICES"
+    
+    if [ "$RUNNING_SERVICES" -eq "$TOTAL_SERVICES" ]; then
+        log_info "✓ 所有服务运行正常"
+    elif [ "$RUNNING_SERVICES" -gt 0 ]; then
+        log_warn "⚠ 部分服务异常 ($RUNNING_SERVICES/$TOTAL_SERVICES 正常运行)"
+    else
+        log_error "✗ 所有服务都未运行"
+    fi
+    
+    # 检查API服务器健康状态
+    log_info "检查API服务器健康状态..."
+    # 等待API服务器启动
+    for i in {1..30}; do
+        API_HEALTH=$(curl -f http://localhost:$PORT/health 2>&1)
+        if [ $? -eq 0 ]; then
+            log_info "✓ API服务器健康检查通过"
+            break
+        elif [ $i -eq 30 ]; then
+            log_warn "✗ API服务器健康检查失败 (超时)"
+            log_warn "错误详情: $API_HEALTH"
+        else
+            sleep 2
+        fi
+    done
+    
+    # 检查数据库连接
+    log_info "检查数据库连接..."
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" 2>&1)
+        if [ $? -eq 0 ]; then
+            log_info "✓ 数据库连接正常"
+        else
+            log_warn "✗ 数据库连接异常"
+            log_warn "错误详情: $DB_ERROR"
+        fi
+    else
+        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -e "SELECT 1;" 2>&1)
+        if [ $? -eq 0 ]; then
+            log_info "✓ 数据库连接正常"
+        else
+            log_warn "✗ 数据库连接异常"
+            log_warn "错误详情: $DB_ERROR"
+        fi
     fi
     
     # 输出服务清单
@@ -451,39 +672,16 @@ check_services() {
     log_info "4. 任务处理器"
     log_info "===================="
 }
-    
-    # 检查服务状态
-    log_info "检查服务状态..."
-    if supervisorctl status | grep -q "RUNNING"; then
-        log_info "✓ 服务运行正常"
-    else
-        log_warn "✗ 部分服务可能异常"
-    fi
-    
-    # 检查API服务器健康状态
-    log_info "检查API服务器健康状态..."
-    if curl -f http://localhost:$PORT/health > /dev/null 2>&1; then
-        log_info "✓ API服务器健康检查通过"
-    else
-        log_warn "✗ API服务器健康检查失败"
-    fi
-    
-    # 检查数据库连接
-    log_info "检查数据库连接..."
-    if psql "$DATABASE_URL" -c "SELECT 1;" > /dev/null 2>&1; then
-        log_info "✓ 数据库连接正常"
-    else
-        log_warn "✗ 数据库连接异常"
-    fi
-}
 
 # 停止服务
 stop_services() {
     log_step "停止所有服务..."
     
     # 检查supervisor是否运行
-    if ! supervisorctl status > /dev/null 2>&1; then
+    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    if [ $? -ne 0 ]; then
         log_warn "supervisor守护进程未运行，无需停止服务"
+        log_warn "错误详情: $SUPERVISOR_STATUS"
         return 0
     fi
     
@@ -515,8 +713,10 @@ stop_services() {
 
 # supervisor管理命令
 supervisor_cmd() {
-    if ! supervisorctl status > /dev/null 2>&1; then
+    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    if [ $? -ne 0 ]; then
         log_error "supervisor守护进程未运行，请先启动服务"
+        log_error "错误详情: $SUPERVISOR_STATUS"
         exit 1
     fi
     
