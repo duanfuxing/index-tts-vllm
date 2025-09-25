@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # 无颜色
 
 # 配置
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVER_DIR="$PROJECT_ROOT/server"
 
@@ -106,12 +106,12 @@ setup_environment() {
     fi
     
     # 检查服务器配置
-    missing_server_vars=()
-    [ -z "$HOST" ] && missing_server_vars+=("HOST")
-    [ -z "$PORT" ] && missing_server_vars+=("PORT")
+    missing_server_vars=""
+    [ -z "$HOST" ] && missing_server_vars="$missing_server_vars HOST"
+    [ -z "$PORT" ] && missing_server_vars="$missing_server_vars PORT"
     
-    if [ ${#missing_server_vars[@]} -gt 0 ]; then
-        log_error "服务器配置缺失以下参数: ${missing_server_vars[*]}"
+    if [ ! -z "$missing_server_vars" ]; then
+        log_error "服务器配置缺失以下参数:$missing_server_vars"
         log_error "请在.env文件中配置这些参数"
         exit 1
     fi
