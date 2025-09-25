@@ -48,14 +48,14 @@ check_dependencies() {
     # 检查并安装数据库相关客户端工具
     if ! command -v mysql &> /dev/null; then
         log_warn "未找到mysql客户端(mysql)，尝试自动安装..."
-        "$SCRIPT_DIR/db_services.sh" install
+        bash "$SCRIPT_DIR/db_services.sh" install
     else
         log_info "✓ MySQL客户端已安装: $(mysql --version | head -n1)"
     fi
 
     if ! command -v redis-server &> /dev/null; then
         log_warn "未找到redis服务器(redis-server)，尝试自动安装..."
-        "$SCRIPT_DIR/db_services.sh" install
+        bash "$SCRIPT_DIR/db_services.sh" install
     else
         log_info "✓ Redis已安装: $(redis-server --version | head -n1)"
     fi
@@ -68,7 +68,7 @@ check_db_services() {
     log_step "检查数据库服务状态..."
     
     # 调用db_services.sh脚本检查服务状态
-    "$SCRIPT_DIR/db_services.sh" status
+    bash "$SCRIPT_DIR/db_services.sh" status
 }
 
 # 启动数据库服务
@@ -76,7 +76,7 @@ start_db_services() {
     log_step "启动数据库服务..."
     
     # 调用db_services.sh脚本启动服务
-    "$SCRIPT_DIR/db_services.sh" start
+    bash "$SCRIPT_DIR/db_services.sh" start
 }
 
 # 设置环境变量
@@ -128,7 +128,7 @@ setup_environment() {
     # 检查数据库配置文件是否存在，如果不存在则创建
     if [ ! -f "$SERVER_DIR/database/mysql.cnf" ] || [ ! -f "$SERVER_DIR/cache/redis.conf" ]; then
         log_info "创建数据库配置文件..."
-        "$SCRIPT_DIR/db_services.sh" config
+        bash "$SCRIPT_DIR/db_services.sh" config
     fi
     
     # 检查必要的环境变量

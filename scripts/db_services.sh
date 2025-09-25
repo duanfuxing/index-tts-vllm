@@ -156,15 +156,72 @@ start_services() {
     if check_mysql_installed; then
         if ! pgrep -x "mysqld" > /dev/null; then
             if [[ "$OSTYPE" == "darwin"* ]]; then
-                brew services start mysql
+                # macOS 优先使用 brew services，失败时尝试 mysql.server 或直接启动 mysqld
+                BREW_OUT=$(brew services start mysql 2>&1 || true)
+                if ! pgrep -x "mysqld" > /dev/null; then
+                    log_warn "brew services 启动MySQL失败或未生效: $BREW_OUT"
+                    if command -v mysql.server &> /dev/null; then
+                        log_info "尝试使用 mysql.server 启动 MySQL..."
+                        MYSQL_SERVER_OUT=$(mysql.server start 2>&1 || true)
+                        if ! pgrep -x "mysqld" > /dev/null; then
+                            log_warn "mysql.server 启动MySQL失败或未生效: $MYSQL_SERVER_OUT"
+                            if command -v mysqld &> /dev/null; then
+                                log_info "尝试直接启动 mysqld..."
+                                nohup mysqld --defaults-file="$MYSQL_CONFIG_FILE" >/dev/null 2>&1 &
+                                sleep 2
+                            else
+                                log_warn "未找到 mysqld 可执行文件，可能仅安装了客户端"
+                            fi
+                        fi
+                    else
+                        # 没有 mysql.server 时，直接尝试 mysqld
+                        if command -v mysqld &> /dev/null; then
+                            log_info "尝试直接启动 mysqld..."
+                            nohup mysqld --defaults-file="$MYSQL_CONFIG_FILE" >/dev/null 2>&1 &
+                            sleep 2
+                        fi
+                    fi
+                fi
             elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                # Linux 环境：systemctl 不可用或未启用时，尝试其他方式
                 if command -v systemctl &> /dev/null; then
-                    systemctl start mysql || systemctl start mysqld
+                    MYSQ_START_OUT=$(systemctl start mysql 2>&1 || systemctl start mysqld 2>&1 || true)
+                    if ! pgrep -x "mysqld" > /dev/null; then
+                        log_warn "systemctl 启动MySQL失败或未生效: $MYSQ_START_OUT"
+                        if echo "$MYSQ_START_OUT" | grep -qi 'System has not been booted with systemd'; then
+                            log_warn "当前环境未使用systemd，改用其他方式启动MySQL"
+                        fi
+                        if command -v service &> /dev/null; then
+                            SERVICE_OUT=$(service mysql start 2>&1 || service mysqld start 2>&1 || true)
+                            if ! pgrep -x "mysqld" > /dev/null; then
+                                log_warn "service 启动MySQL失败或未生效: $SERVICE_OUT"
+                            fi
+                        fi
+                    fi
                 elif command -v service &> /dev/null; then
-                    service mysql start || service mysqld start
+                    SERVICE_OUT=$(service mysql start 2>&1 || service mysqld start 2>&1 || true)
+                    if ! pgrep -x "mysqld" > /dev/null; then
+                        log_warn "service 启动MySQL失败或未生效: $SERVICE_OUT"
+                    fi
+                fi
+                
+                # 直接启动 mysqld 作为兜底
+                if ! pgrep -x "mysqld" > /dev/null; then
+                    if command -v mysqld &> /dev/null; then
+                        log_info "尝试直接启动 mysqld..."
+                        nohup mysqld --defaults-file="$MYSQL_CONFIG_FILE" >/dev/null 2>&1 &
+                        sleep 2
+                    else
+                        log_warn "未找到 mysqld 可执行文件，可能仅安装了客户端"
+                    fi
                 fi
             fi
-            log_info "MySQL服务已启动"
+            
+            if pgrep -x "mysqld" > /dev/null; then
+                log_info "MySQL服务已启动"
+            else
+                log_warn "MySQL服务启动尝试后仍未运行，请检查安装与配置"
+            fi
         else
             log_info "MySQL服务已在运行"
         fi
@@ -176,15 +233,56 @@ start_services() {
     if check_redis_installed; then
         if ! pgrep -x "redis-server" > /dev/null; then
             if [[ "$OSTYPE" == "darwin"* ]]; then
-                brew services start redis
+                REDIS_BREW_OUT=$(brew services start redis 2>&1 || true)
+                if ! pgrep -x "redis-server" > /dev/null; then
+                    log_warn "brew services 启动Redis失败或未生效: $REDIS_BREW_OUT"
+                    if command -v redis-server &> /dev/null; then
+                        log_info "尝试直接启动 redis-server..."
+                        nohup redis-server "$REDIS_CONFIG_FILE" >/dev/null 2>&1 &
+                        sleep 1
+                    else
+                        log_warn "未找到 redis-server 可执行文件"
+                    fi
+                fi
             elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
                 if command -v systemctl &> /dev/null; then
-                    systemctl start redis
+                    REDIS_START_OUT=$(systemctl start redis 2>&1 || true)
+                    if ! pgrep -x "redis-server" > /dev/null; then
+                        log_warn "systemctl 启动Redis失败或未生效: $REDIS_START_OUT"
+                        if echo "$REDIS_START_OUT" | grep -qi 'System has not been booted with systemd'; then
+                            log_warn "当前环境未使用systemd，改用其他方式启动Redis"
+                        fi
+                        if command -v service &> /dev/null; then
+                            REDIS_SERVICE_OUT=$(service redis-server start 2>&1 || true)
+                            if ! pgrep -x "redis-server" > /dev/null; then
+                                log_warn "service 启动Redis失败或未生效: $REDIS_SERVICE_OUT"
+                            fi
+                        fi
+                    fi
                 elif command -v service &> /dev/null; then
-                    service redis-server start
+                    REDIS_SERVICE_OUT=$(service redis-server start 2>&1 || true)
+                    if ! pgrep -x "redis-server" > /dev/null; then
+                        log_warn "service 启动Redis失败或未生效: $REDIS_SERVICE_OUT"
+                    fi
+                fi
+                
+                # 兜底：直接启动 redis-server
+                if ! pgrep -x "redis-server" > /dev/null; then
+                    if command -v redis-server &> /dev/null; then
+                        log_info "尝试直接启动 redis-server..."
+                        nohup redis-server "$REDIS_CONFIG_FILE" >/dev/null 2>&1 &
+                        sleep 1
+                    else
+                        log_warn "未找到 redis-server 可执行文件"
+                    fi
                 fi
             fi
-            log_info "Redis服务已启动"
+            
+            if pgrep -x "redis-server" > /dev/null; then
+                log_info "Redis服务已启动"
+            else
+                log_warn "Redis服务启动尝试后仍未运行，请检查安装与配置"
+            fi
         else
             log_info "Redis服务已在运行"
         fi
