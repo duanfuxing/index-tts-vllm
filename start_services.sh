@@ -180,14 +180,13 @@ check_database() {
     if [ $? -eq 0 ]; then
         log_info "MySQL数据库连接正常"
     else
-        log_warn "MySQL数据库连接失败，将跳过数据库相关功能"
-        log_warn "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
-        log_warn "如需使用数据库功能，请检查："
-        log_warn "1. MySQL服务是否运行"
-        log_warn "2. 数据库连接参数是否正确"
-        log_warn "3. 用户权限是否足够"
-        export SKIP_DATABASE=true
-        return 1
+        log_error "MySQL数据库连接失败"
+        log_error "连接信息: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DATABASE"
+        log_error "请检查："
+        log_error "1. MySQL服务是否运行"
+        log_error "2. 数据库连接参数是否正确"
+        log_error "3. 用户权限是否足够"
+        exit 1
     fi
     
     # 检查Redis连接
@@ -198,10 +197,9 @@ check_database() {
     if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping > /dev/null 2>&1; then
         log_info "Redis连接正常"
     else
-        log_warn "Redis连接失败，将跳过缓存相关功能"
-        log_warn "连接信息: $REDIS_HOST:$REDIS_PORT"
-        export SKIP_REDIS=true
-        return 1
+        log_error "Redis连接失败"
+        log_error "连接信息: $REDIS_HOST:$REDIS_PORT"
+        exit 1
     fi
 }
 
