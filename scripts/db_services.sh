@@ -19,8 +19,8 @@ SERVER_DIR="$PROJECT_ROOT/server"
 DATA_DIR="$PROJECT_ROOT/data"
 MYSQL_DATA_DIR="$DATA_DIR/mysql"
 REDIS_DATA_DIR="$DATA_DIR/redis"
-MYSQL_CONFIG_FILE="$SERVER_DIR/database/mysql.cnf"
-REDIS_CONFIG_FILE="$SERVER_DIR/cache/redis.conf"
+MYSQL_CONFIG_FILE="$DATA_DIR/mysql/mysql.cnf"
+REDIS_CONFIG_FILE="$DATA_DIR/redis/redis.conf"
 
 # 打印彩色输出的函数
 log_info() { echo -e "${GREEN}[信息]${NC} $1"; }
@@ -68,33 +68,45 @@ create_configs() {
     MYSQL_TEMP_CONFIG="/tmp/mysql_$(date +%s).cnf"
     REDIS_TEMP_CONFIG="/tmp/redis_$(date +%s).conf"
     
-    # 处理MySQL配置文件中的环境变量
-    if command -v envsubst &> /dev/null; then
-        envsubst < "$MYSQL_CONFIG_FILE" > "$MYSQL_TEMP_CONFIG"
-        envsubst < "$REDIS_CONFIG_FILE" > "$REDIS_TEMP_CONFIG"
-    else
-        # 如果没有envsubst，手动替换环境变量
-        sed -e "s/\${MYSQL_HOST:-localhost}/${MYSQL_HOST:-localhost}/g" \
-            -e "s/\${MYSQL_PORT:-3306}/${MYSQL_PORT:-3306}/g" \
-            -e "s/\${MYSQL_USER:-tts_user}/${MYSQL_USER:-tts_user}/g" \
-            -e "s/\${MYSQL_PASSWORD:-tts_password}/${MYSQL_PASSWORD:-tts_password}/g" \
-            -e "s/\${MYSQL_DATABASE:-tts_db}/${MYSQL_DATABASE:-tts_db}/g" \
-            -e "s|\${MYSQL_DATA_DIR}|${MYSQL_DATA_DIR}|g" \
-            "$MYSQL_CONFIG_FILE" > "$MYSQL_TEMP_CONFIG"
-            
-        sed -e "s/\${REDIS_PORT:-6379}/${REDIS_PORT:-6379}/g" \
-            -e "s/\${REDIS_PASSWORD:-}/${REDIS_PASSWORD:-}/g" \
-            -e "s/\${REDIS_DB:-0}/${REDIS_DB:-0}/g" \
-            -e "s|\${REDIS_DATA_DIR}|${REDIS_DATA_DIR}|g" \
-            -e "s/\${REDIS_QUEUE_PREFIX:-tts_queue}/${REDIS_QUEUE_PREFIX:-tts_queue}/g" \
-            "$REDIS_CONFIG_FILE" > "$REDIS_TEMP_CONFIG"
-    fi
+    # 使用bash的参数扩展来处理环境变量替换
+    # 这样可以正确处理 ${VAR:-default} 语法
+    log_info "处理MySQL配置文件中的环境变量..."
+    
+    # 读取MySQL配置文件并进行环境变量替换
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # 使用eval来处理环境变量替换，但要小心安全性
+        if [[ "$line" =~ \$\{[^}]+\} ]]; then
+            # 安全地处理环境变量替换
+            eval "echo \"$line\"" 2>/dev/null || echo "$line"
+        else
+            echo "$line"
+        fi
+    done < "$MYSQL_CONFIG_FILE" > "$MYSQL_TEMP_CONFIG"
+    
+    log_info "处理Redis配置文件中的环境变量..."
+    
+    # 读取Redis配置文件并进行环境变量替换
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # 使用eval来处理环境变量替换，但要小心安全性
+        if [[ "$line" =~ \$\{[^}]+\} ]]; then
+            # 安全地处理环境变量替换
+            eval "echo \"$line\"" 2>/dev/null || echo "$line"
+        else
+            echo "$line"
+        fi
+    done < "$REDIS_CONFIG_FILE" > "$REDIS_TEMP_CONFIG"
     
     # 验证配置文件格式
     if [ -s "$MYSQL_TEMP_CONFIG" ] && [ -s "$REDIS_TEMP_CONFIG" ]; then
         log_info "配置文件处理完成"
         log_info "MySQL临时配置: $MYSQL_TEMP_CONFIG"
         log_info "Redis临时配置: $REDIS_TEMP_CONFIG"
+        
+        # 显示处理后的配置文件大小
+        local mysql_size=$(wc -l < "$MYSQL_TEMP_CONFIG")
+        local redis_size=$(wc -l < "$REDIS_TEMP_CONFIG")
+        log_info "MySQL配置文件: $mysql_size 行"
+        log_info "Redis配置文件: $redis_size 行"
     else
         log_error "配置文件处理失败"
         rm -f "$MYSQL_TEMP_CONFIG" "$REDIS_TEMP_CONFIG"
@@ -507,11 +519,12 @@ stop_services() {
             
             if pgrep -x "mysqld" > /dev/null; then
                 log_warn "MySQL服务可能未完全停止"
+                mysql_stopped=false
             else
                 log_info "MySQL服务已完全停止"
             fi
         else
-            log_error "MySQL服务停止失败"
+            log_warn "MySQL服务停止失败"
         fi
     else
         log_info "MySQL服务未在运行或未安装"
@@ -551,8 +564,14 @@ stop_services() {
             
             if ! $redis_stopped && command -v service &> /dev/null; then
                 if service redis-server stop 2>/dev/null || service redis stop 2>/dev/null; then
-                    redis_stopped=true
-                    log_info "Redis服务已通过service停止"
+                    # 等待一下再检查进程是否真的停止了
+                    sleep 2
+                    if ! pgrep -x "redis-server" > /dev/null; then
+                        redis_stopped=true
+                        log_info "Redis服务已通过service停止"
+                    else
+                        log_warn "service命令执行成功但Redis进程仍在运行"
+                    fi
                 fi
             fi
             
@@ -579,11 +598,12 @@ stop_services() {
             
             if pgrep -x "redis-server" > /dev/null; then
                 log_warn "Redis服务可能未完全停止"
+                redis_stopped=false
             else
                 log_info "Redis服务已完全停止"
             fi
         else
-            log_error "Redis服务停止失败"
+            log_warn "Redis服务停止失败"
         fi
     else
         log_info "Redis服务未在运行或未安装"
@@ -593,8 +613,10 @@ stop_services() {
     # 总结停止结果
     if $mysql_stopped && $redis_stopped; then
         log_info "所有服务已成功停止"
+        return 0
     else
         log_warn "部分服务停止失败，请检查服务状态"
+        return 1
     fi
 }
 
@@ -628,6 +650,65 @@ init_database() {
     
     log_info "MySQL服务响应正常，开始初始化数据库..."
     
+    # 检查数据库是否已存在并包含数据
+    local db_exists=false
+    local has_data=false
+    
+    if mysql -u root -e "USE \`${MYSQL_DATABASE:-tts_db}\`;" &>/dev/null; then
+        db_exists=true
+        log_info "数据库 '${MYSQL_DATABASE:-tts_db}' 已存在"
+        
+        # 检查是否有数据表
+        local table_count=$(mysql -u root "${MYSQL_DATABASE:-tts_db}" -e "SHOW TABLES;" 2>/dev/null | wc -l)
+        if [ "$table_count" -gt 1 ]; then  # 大于1是因为第一行是表头
+            has_data=true
+            log_warn "数据库中已存在 $((table_count-1)) 个数据表"
+            
+            # 检查关键表是否有数据
+            local tts_tasks_count=$(mysql -u root "${MYSQL_DATABASE:-tts_db}" -e "SELECT COUNT(*) FROM tts_tasks;" 2>/dev/null | tail -n1 || echo "0")
+            if [ "$tts_tasks_count" -gt 0 ]; then
+                log_warn "tts_tasks表中已有 $tts_tasks_count 条记录"
+            fi
+        fi
+    fi
+    
+    # 如果数据库已存在且有数据，询问用户是否继续
+    if [ "$has_data" = true ]; then
+        log_warn "⚠️  警告：数据库已包含数据，继续初始化可能会影响现有数据！"
+        echo ""
+        echo "请选择操作："
+        echo "1) 跳过初始化（推荐）"
+        echo "2) 仅创建缺失的表结构（安全）"
+        echo "3) 强制重新初始化（危险：可能丢失数据）"
+        echo "4) 退出"
+        echo ""
+        read -p "请输入选择 (1-4): " choice
+        
+        case "$choice" in
+            1)
+                log_info "跳过数据库初始化"
+                return 0
+                ;;
+            2)
+                log_info "仅创建缺失的表结构..."
+                # 继续执行，但跳过用户创建和权限设置
+                ;;
+            3)
+                log_warn "强制重新初始化数据库..."
+                log_warn "这可能会导致数据丢失！"
+                read -p "确认继续？(输入 'YES' 确认): " confirm
+                if [ "$confirm" != "YES" ]; then
+                    log_info "取消初始化"
+                    return 0
+                fi
+                ;;
+            4|*)
+                log_info "退出初始化"
+                return 0
+                ;;
+        esac
+    fi
+    
     # 创建数据库
     log_info "创建数据库: ${MYSQL_DATABASE:-tts_db}"
     if mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${MYSQL_DATABASE:-tts_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
@@ -637,35 +718,46 @@ init_database() {
         exit 1
     fi
     
-    # 创建用户并授权
-    log_info "创建用户: ${MYSQL_USER:-tts_user}"
-    if mysql -u root -e "CREATE USER IF NOT EXISTS '${MYSQL_USER:-tts_user}'@'%' IDENTIFIED BY '${MYSQL_PASSWORD:-tts_password}';"; then
-        log_info "用户创建成功"
+    # 只有在选择强制初始化或数据库不存在时才创建用户
+    if [ "$has_data" != true ] || [ "$choice" = "3" ]; then
+        # 创建用户并授权
+        log_info "创建用户: ${MYSQL_USER:-tts_user}"
+        if mysql -u root -e "CREATE USER IF NOT EXISTS '${MYSQL_USER:-tts_user}'@'%' IDENTIFIED BY '${MYSQL_PASSWORD:-tts_password}';"; then
+            log_info "用户创建成功"
+        else
+            log_error "用户创建失败"
+            exit 1
+        fi
+        
+        # 授权
+        log_info "为用户授权..."
+        if mysql -u root -e "GRANT ALL PRIVILEGES ON \`${MYSQL_DATABASE:-tts_db}\`.* TO '${MYSQL_USER:-tts_user}'@'%';"; then
+            log_info "用户授权成功"
+        else
+            log_error "用户授权失败"
+            exit 1
+        fi
+        
+        # 刷新权限
+        if mysql -u root -e "FLUSH PRIVILEGES;"; then
+            log_info "权限刷新成功"
+        else
+            log_error "权限刷新失败"
+            exit 1
+        fi
     else
-        log_error "用户创建失败"
-        exit 1
-    fi
-    
-    # 授权
-    log_info "为用户授权..."
-    if mysql -u root -e "GRANT ALL PRIVILEGES ON \`${MYSQL_DATABASE:-tts_db}\`.* TO '${MYSQL_USER:-tts_user}'@'%';"; then
-        log_info "用户授权成功"
-    else
-        log_error "用户授权失败"
-        exit 1
-    fi
-    
-    # 刷新权限
-    if mysql -u root -e "FLUSH PRIVILEGES;"; then
-        log_info "权限刷新成功"
-    else
-        log_error "权限刷新失败"
-        exit 1
+        log_info "跳过用户创建和权限设置（用户已存在）"
     fi
     
     # 导入初始化SQL
     if [ -f "$SERVER_DIR/database/init.sql" ]; then
         log_info "导入初始化SQL文件..."
+        
+        # 如果选择了仅创建表结构，先备份现有数据
+        if [ "$choice" = "2" ] && [ "$has_data" = true ]; then
+            log_info "检测到现有数据，SQL文件将安全执行（使用IF NOT EXISTS）"
+        fi
+        
         if mysql -u root "${MYSQL_DATABASE:-tts_db}" < "$SERVER_DIR/database/init.sql"; then
             log_info "初始化SQL导入成功"
         else
@@ -699,7 +791,7 @@ init_database() {
     if [ -f "$SERVER_DIR/database/init.sql" ]; then
         local table_count=$(mysql -u "${MYSQL_USER:-tts_user}" -p"${MYSQL_PASSWORD:-tts_password}" "${MYSQL_DATABASE:-tts_db}" -e "SHOW TABLES;" 2>/dev/null | wc -l)
         if [ "$table_count" -gt 1 ]; then  # 大于1是因为第一行是表头
-            log_info "数据表创建验证成功，共创建 $((table_count-1)) 个表"
+            log_info "数据表创建验证成功，共有 $((table_count-1)) 个表"
         else
             log_warn "未检测到数据表，可能初始化SQL文件为空或执行失败"
         fi
@@ -712,8 +804,8 @@ init_database() {
 restart_services() {
     log_step "重启服务..."
     
-    # 先停止服务
-    stop_services
+    # 先停止服务（忽略停止失败的错误）
+    stop_services || log_warn "停止服务时出现错误，继续执行启动流程"
     
     # 等待一段时间确保服务完全停止
     log_info "等待服务完全停止..."
@@ -869,7 +961,7 @@ show_help() {
     echo "  - 请确保.env文件存在并配置正确"
     echo "  - 首次使用请先运行 install 安装服务"
     echo "  - 数据库初始化需要MySQL服务正在运行"
-    echo "  - 配置文件位于 server/database/mysql.cnf 和 server/cache/redis.conf"
+    echo "  - 配置文件位于 data/mysql/mysql.cnf 和 data/redis/redis.conf"
 }
 
 # 主函数

@@ -29,9 +29,6 @@ redis>=5.0.0
 aioredis>=2.0.0
 soundfile>=0.12.1
 requests>=2.31.0
-
-# 文本处理依赖
 WeTextProcessing
-
-# 进程管理依赖（用于生产环境）
 supervisor>=4.2.0
+flashinfer-python

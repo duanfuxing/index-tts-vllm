@@ -20,9 +20,9 @@ import json
 
 from pydantic import BaseModel, Field
 from indextts.infer_vllm import IndexTTS
-from .database.db_manager import DatabaseManager
-from .cache.redis_manager import RedisManager
-from .tos_uploader import TOSUploader
+from server.database.db_manager import DatabaseManager
+from server.cache.redis_manager import RedisManager
+from server.tos_uploader import TOSUploader
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -616,11 +616,20 @@ async def tts_api_openai_legacy(request: Request):
         )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=11996)
-    parser.add_argument("--model_dir", type=str, default="/path/to/IndexTeam/Index-TTS")
-    parser.add_argument("--gpu_memory_utilization", type=float, default=0.25)
-    args = parser.parse_args()
+    # 从环境变量读取配置参数
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", "6006"))
+    model_dir = os.getenv("MODEL_DIR", "/path/to/IndexTeam/Index-TTS")
+    gpu_memory_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.40"))
+    
+    # 创建args对象以保持兼容性
+    class Args:
+        def __init__(self):
+            self.host = host
+            self.port = port
+            self.model_dir = model_dir
+            self.gpu_memory_utilization = gpu_memory_utilization
+    
+    args = Args()
     
     uvicorn.run(app=app, host=args.host, port=args.port)

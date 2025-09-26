@@ -340,29 +340,24 @@ class TTSTaskWorker:
         logger.info(f"处理器 {self.worker_id} 收到停止请求")
 
 async def main():
-    import argparse
+    import uuid
     
-    parser = argparse.ArgumentParser(description="TTS Task Worker")
-    parser.add_argument("--worker-id", type=str, default=None, help="Worker ID (auto-generated if not provided)")
-    parser.add_argument("--model-dir", type=str, required=True, help="TTS model directory")
-    parser.add_argument("--database-url", type=str, required=True, help="PostgreSQL database URL")
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.25, help="GPU memory utilization")
-    parser.add_argument("--audio-output-dir", type=str, default="./audio_output", help="Audio output directory")
-    parser.add_argument("--task-type", type=str, choices=['online', 'long_text'], help="Task type to process")
-    parser.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
-    
-    args = parser.parse_args()
-    
-    # 生成worker ID
-    worker_id = args.worker_id or f"worker-{uuid.uuid4().hex[:8]}"
+    # 从环境变量读取配置参数
+    worker_id = os.getenv("WORKER_ID") or f"worker-{uuid.uuid4().hex[:8]}"
+    model_dir = os.getenv("MODEL_DIR", "/path/to/IndexTeam/Index-TTS")
+    database_url = os.getenv("DATABASE_URL", "mysql://user:password@localhost:3306/tts_db")
+    gpu_memory_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.40"))
+    audio_output_dir = os.getenv("AUDIO_OUTPUT_DIR", "./audio_output")
+    task_type = os.getenv("TASK_TYPE")  # 可选参数
+    poll_interval = float(os.getenv("POLL_INTERVAL", "1.0"))
     
     # 创建worker
     worker = TTSTaskWorker(
         worker_id=worker_id,
-        model_dir=args.model_dir,
-        database_url=args.database_url,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        audio_output_dir=args.audio_output_dir
+        model_dir=model_dir,
+        database_url=database_url,
+        gpu_memory_utilization=gpu_memory_utilization,
+        audio_output_dir=audio_output_dir
     )
     
     # 设置信号处理
@@ -378,7 +373,7 @@ async def main():
         await worker.initialize()
         
         # 运行worker
-        await worker.run(task_type=args.task_type, poll_interval=args.poll_interval)
+        await worker.run(task_type=task_type, poll_interval=poll_interval)
         
     except KeyboardInterrupt:
         logger.info("收到键盘中断信号")

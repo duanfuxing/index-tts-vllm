@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 from server.utils.file_manager import TaskFileManager
-from server.utils.db_manager import DatabaseManager
+from server.database.db_manager import DatabaseManager
 
 def test_online_tts_integration():
     """测试在线TTS API的集成功能"""
@@ -28,7 +28,7 @@ def test_online_tts_integration():
     # 测试数据
     test_data = {
         "text": "这是一个集成测试，验证在线TTS API的文件存储功能。",
-        "voice": "zh-CN-XiaoxiaoNeural",
+        "voice": "yunxi",
         "seed": 8
     }
     
@@ -36,7 +36,7 @@ def test_online_tts_integration():
         # 发送TTS请求
         print("1. 发送在线TTS请求...")
         response = requests.post(
-            "http://localhost:8000/tts/online",
+            "http://localhost:6006/tts/online",
             json=test_data,
             timeout=30
         )
@@ -105,8 +105,8 @@ def test_long_text_tts_integration():
     # 测试数据
     test_data = {
         "text": "这是一个长文本TTS集成测试。" * 20,  # 重复20次创建长文本
-        "voice": "zh-CN-XiaoxiaoNeural",
-        "callback_url": "http://localhost:8000/test-callback",
+        "voice": "yunxi",
+        "callback_url": "http://localhost:6006/test-callback",
         "metadata": {"test": "long_text_integration"}
     }
     
@@ -114,7 +114,7 @@ def test_long_text_tts_integration():
         # 提交长文本TTS任务
         print("1. 提交长文本TTS任务...")
         response = requests.post(
-            "http://localhost:8000/tts/long-text/submit",
+            "http://localhost:6006/tts/long-text/submit",
             json=test_data,
             timeout=30
         )
@@ -144,7 +144,7 @@ def test_long_text_tts_integration():
             
             # 检查任务状态
             status_response = requests.get(
-                f"http://localhost:8000/tts/long-text/result/{task_id}",
+                f"http://localhost:6006/tts/long-text/result/{task_id}",
                 timeout=10
             )
             
@@ -195,7 +195,7 @@ def test_long_text_tts_integration():
         # 测试字幕文件下载
         print("5. 测试字幕文件下载...")
         srt_response = requests.get(
-            f"http://localhost:8000/tts/long-text/srt/{task_id}",
+            f"http://localhost:6006/tts/long-text/srt/{task_id}",
             timeout=10
         )
         
@@ -232,7 +232,7 @@ def check_services():
     
     try:
         # 检查API服务
-        response = requests.get("http://localhost:8000/health", timeout=5)
+        response = requests.get("http://localhost:6006/health", timeout=5)
         if response.status_code == 200:
             print("✅ API服务运行正常")
             return True

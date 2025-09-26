@@ -35,6 +35,231 @@ log_step() {
     echo -e "${BLUE}[步骤]${NC} $1"
 }
 
+# 初始化环境
+init_environment() {
+    log_step "初始化环境..."
+    
+    local need_install_deps=false
+    local need_install_supervisor=false
+    local need_install_mysql=false
+    local need_install_redis=false
+    local need_init_db=false
+    
+    # 1. 检查.env配置是否缺失
+    log_info "1. 检查环境配置文件..."
+    if [ ! -f "$PROJECT_ROOT/.env" ]; then
+        if [ -f "$PROJECT_ROOT/.env.example" ]; then
+            log_info "复制.env.example到.env"
+            cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
+            log_warn "请根据实际情况修改.env文件中的配置"
+        else
+            log_error ".env文件不存在，且未找到.env.example文件"
+            log_error "请手动创建.env配置文件或提供.env.example模板文件"
+            exit 1
+        fi
+    else
+        log_info "✓ .env配置文件存在"
+    fi
+    
+    # 加载环境变量
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        export $(cat "$PROJECT_ROOT/.env" | grep -v '^#' | grep -v '^$' | xargs)
+    fi
+    
+    # 检查关键环境变量
+    local missing_vars=""
+    [ -z "$MODEL_DIR" ] && missing_vars="$missing_vars MODEL_DIR"
+    [ -z "$HOST" ] && missing_vars="$missing_vars HOST"
+    [ -z "$PORT" ] && missing_vars="$missing_vars PORT"
+    [ -z "$MYSQL_HOST" ] && missing_vars="$missing_vars MYSQL_HOST"
+    [ -z "$MYSQL_USER" ] && missing_vars="$missing_vars MYSQL_USER"
+    [ -z "$MYSQL_DATABASE" ] && missing_vars="$missing_vars MYSQL_DATABASE"
+    
+    if [ ! -z "$missing_vars" ]; then
+        log_error "环境变量配置缺失:$missing_vars"
+        log_error "请在.env文件中配置这些参数"
+        exit 1
+    fi
+    
+    # 检查模型目录
+    if [ ! -d "$MODEL_DIR" ]; then
+        log_error "TTS模型目录不存在: $MODEL_DIR"
+        log_error "请确保MODEL_DIR指向正确的模型目录"
+        exit 1
+    fi
+    
+    log_info "✓ 环境配置检查通过"
+    
+    # 2. 依赖检查
+    log_info "2. 检查Python依赖..."
+    if [ ! -f "$PROJECT_ROOT/requirements.txt" ]; then
+        log_error "requirements.txt文件不存在"
+        exit 1
+    fi
+    
+    # 检查关键Python包是否已安装
+    local missing_packages=""
+    if ! python3 -c "import fastapi" &> /dev/null; then
+        missing_packages="$missing_packages fastapi"
+    fi
+    if ! python3 -c "import uvicorn" &> /dev/null; then
+        missing_packages="$missing_packages uvicorn"
+    fi
+    if ! python3 -c "import sqlalchemy" &> /dev/null; then
+        missing_packages="$missing_packages sqlalchemy"
+    fi
+    
+    if [ ! -z "$missing_packages" ]; then
+        log_warn "检测到缺失的Python包:$missing_packages"
+        need_install_deps=true
+    else
+        log_info "✓ 关键Python依赖已安装"
+    fi
+    
+    # 3. Supervisor检查
+    log_info "3. 检查Supervisor..."
+    if ! command -v supervisord &> /dev/null || ! command -v supervisorctl &> /dev/null; then
+        log_warn "Supervisor未安装或不完整"
+        need_install_supervisor=true
+    else
+        log_info "✓ Supervisor已安装"
+    fi
+    
+    # 4. MySQL检查
+    log_info "4. 检查MySQL..."
+    if ! command -v mysql &> /dev/null; then
+        log_warn "MySQL客户端未安装"
+        need_install_mysql=true
+    else
+        log_info "✓ MySQL客户端已安装: $(mysql --version | head -n1)"
+        
+        # 检查MySQL服务是否运行
+        if ! pgrep -x "mysqld" > /dev/null; then
+            log_warn "MySQL服务未运行"
+            need_install_mysql=true
+        else
+            log_info "✓ MySQL服务正在运行"
+            
+            # 测试数据库连接
+            set +e
+            if [ -n "$MYSQL_PASSWORD" ]; then
+                mysql --protocol=TCP --connect-timeout=5 -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" &>/dev/null
+            else
+                mysql --protocol=TCP --connect-timeout=5 -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -e "SELECT 1;" &>/dev/null
+            fi
+            local db_test_result=$?
+            set -e
+            
+            if [ $db_test_result -eq 0 ]; then
+                log_info "✓ MySQL数据库连接正常"
+                
+                # 检查数据库表是否存在
+                local table_exists=0
+                if [ -n "$MYSQL_PASSWORD" ]; then
+                    table_exists=$(mysql -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null || echo "0")
+                else
+                    table_exists=$(mysql -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'tts_tasks';" -s -N 2>/dev/null || echo "0")
+                fi
+                
+                if [ "$table_exists" = "1" ]; then
+                    log_info "✓ 数据库表结构已存在"
+                else
+                    log_warn "数据库表结构不存在"
+                    need_init_db=true
+                fi
+            else
+                log_warn "MySQL数据库连接失败"
+                need_init_db=true
+            fi
+        fi
+    fi
+    
+    # 5. Redis检查
+    log_info "5. 检查Redis..."
+    if ! command -v redis-server &> /dev/null; then
+        log_warn "Redis服务器未安装"
+        need_install_redis=true
+    else
+        log_info "✓ Redis已安装: $(redis-server --version | head -n1)"
+        
+        # 检查Redis服务是否运行
+        if ! pgrep -x "redis-server" > /dev/null; then
+            log_warn "Redis服务未运行"
+            need_install_redis=true
+        else
+            log_info "✓ Redis服务正在运行"
+            
+            # 测试Redis连接
+            if command -v redis-cli &> /dev/null && redis-cli ping &>/dev/null; then
+                log_info "✓ Redis连接正常"
+            else
+                log_warn "Redis连接失败"
+                need_install_redis=true
+            fi
+        fi
+    fi
+    
+    # 执行必要的安装和初始化
+    log_info "===== 环境初始化总结 ====="
+    log_info "Python依赖需要安装: $([ "$need_install_deps" = true ] && echo "是" || echo "否")"
+    log_info "Supervisor需要安装: $([ "$need_install_supervisor" = true ] && echo "是" || echo "否")"
+    log_info "MySQL需要安装/启动: $([ "$need_install_mysql" = true ] && echo "是" || echo "否")"
+    log_info "Redis需要安装/启动: $([ "$need_install_redis" = true ] && echo "是" || echo "否")"
+    log_info "数据库需要初始化: $([ "$need_init_db" = true ] && echo "是" || echo "否")"
+    log_info "================================"
+    
+    # 安装Python依赖
+    if [ "$need_install_deps" = true ]; then
+        log_step "安装Python依赖..."
+        
+        # 检查磁盘空间
+        local available_space=$(df /root | tail -1 | awk '{print $4}')
+        local required_space=2097152  # 2GB in KB
+        
+        if [ "$available_space" -lt "$required_space" ]; then
+            log_warn "磁盘空间不足 (可用: $(($available_space/1024))MB, 需要: $(($required_space/1024))MB)"
+            log_warn "跳过Python依赖安装，但会继续其他初始化步骤"
+        else
+            cd "$PROJECT_ROOT"
+            pip3 install -r requirements.txt
+            log_info "✓ Python依赖安装完成"
+        fi
+    fi
+    
+    # 安装Supervisor
+    if [ "$need_install_supervisor" = true ]; then
+        log_step "安装Supervisor..."
+        pip3 install supervisor
+        log_info "✓ Supervisor安装完成"
+    fi
+    
+    # 安装/启动MySQL和Redis
+    if [ "$need_install_mysql" = true ] || [ "$need_install_redis" = true ]; then
+        log_step "安装/启动数据库服务..."
+        
+        # 如果服务未安装，先安装
+        if ! command -v mysql &> /dev/null || ! command -v redis-server &> /dev/null; then
+            bash "$SCRIPT_DIR/db_services.sh" install
+        fi
+        
+        # 启动数据库服务
+        bash "$SCRIPT_DIR/db_services.sh" start
+        log_info "✓ 数据库服务启动完成"
+        
+        # 等待服务就绪
+        sleep 3
+    fi
+    
+    # 初始化数据库
+    if [ "$need_init_db" = true ]; then
+        log_step "初始化数据库..."
+        bash "$SCRIPT_DIR/db_services.sh" init
+        log_info "✓ 数据库初始化完成"
+    fi
+    
+    log_info "环境初始化完成！"
+}
+
 # 检查依赖
 check_dependencies() {
     log_step "检查系统依赖..."
@@ -502,18 +727,24 @@ start_supervisord() {
     log_step "启动supervisor守护进程..."
     
     # 检查supervisor是否已经在运行
-    if pgrep -f "supervisord" > /dev/null; then
-        log_info "supervisor守护进程已在运行，跳过启动"
-        return 0
+    if [ -f "$PROJECT_ROOT/logs/supervisord.pid" ]; then
+        local pid=$(cat "$PROJECT_ROOT/logs/supervisord.pid" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log_info "supervisor守护进程已在运行 (PID: $pid)，跳过启动"
+            return 0
+        else
+            log_info "清理过期的PID文件"
+            rm -f "$PROJECT_ROOT/logs/supervisord.pid"
+        fi
     fi
     
     # 设置环境变量供supervisor使用
     export MODEL_DIR="$MODEL_DIR"
     export HOST="$HOST"
     export PORT="$PORT"
-    export GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION"
-    export DATABASE_URL="$DATABASE_URL"
-    export AUDIO_OUTPUT_DIR="$AUDIO_OUTPUT_DIR"
+    export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
+    export DATABASE_URL="mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE}"
+    export AUDIO_OUTPUT_DIR="${AUDIO_OUTPUT_DIR:-$PROJECT_ROOT/storage/audio}"
     
     # 设置supervisor进程管理配置
     export SUPERVISOR_AUTOSTART="${SUPERVISOR_AUTOSTART:-true}"
@@ -524,17 +755,28 @@ start_supervisord() {
     export SUPERVISOR_LOG_BACKUPS="${SUPERVISOR_LOG_BACKUPS:-10}"
     export SUPERVISOR_API_PRIORITY="${SUPERVISOR_API_PRIORITY:-100}"
     export SUPERVISOR_WORKER_PRIORITY="${SUPERVISOR_WORKER_PRIORITY:-200}"
-    export SUPERVISOR_USER="${SUPERVISOR_USER:-www-data}"
+    export SUPERVISOR_USER="${SUPERVISOR_USER:-root}"
     export SUPERVISOR_PROJECT_DIR="${SUPERVISOR_PROJECT_DIR:-$PROJECT_ROOT}"
+    
+    # 确保日志目录存在
+    mkdir -p "$PROJECT_ROOT/logs"
     
     # 启动supervisord，使用绝对路径配置文件
     log_info "启动supervisor守护进程..."
+    cd "$PROJECT_ROOT"
     SUPERVISORD_ERROR=$(supervisord -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" 2>&1)
     SUPERVISORD_EXIT_CODE=$?
     
     if [ $SUPERVISORD_EXIT_CODE -eq 0 ]; then
         log_info "supervisor守护进程启动成功"
         sleep 2  # 等待supervisor完全启动
+        
+        # 验证supervisor是否正常运行
+        if supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status >/dev/null 2>&1; then
+            log_info "supervisor守护进程验证成功"
+        else
+            log_warn "supervisor守护进程可能未完全启动，继续执行..."
+        fi
     else
         log_error "supervisor守护进程启动失败"
         log_error "错误详情: $SUPERVISORD_ERROR"
@@ -548,7 +790,7 @@ start_services() {
     
     # 获取当前服务状态
     log_info "检查当前服务状态..."
-    SERVICES_STATUS=$(supervisorctl status tts-services:* 2>&1)
+    SERVICES_STATUS=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status tts-services:* 2>&1)
     SERVICES_STATUS_EXIT_CODE=$?
     
     if [ $SERVICES_STATUS_EXIT_CODE -ne 0 ]; then
@@ -603,7 +845,7 @@ start_services() {
         echo "$STOPPED_SERVICES" | while read service; do
             if [ -n "$service" ]; then
                 log_info "启动服务: $service"
-                START_RESULT=$(supervisorctl start "$service" 2>&1)
+                START_RESULT=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" start "$service" 2>&1)
                 START_EXIT_CODE=$?
                 if [ $START_EXIT_CODE -eq 0 ]; then
                     log_info "  ✓ $service 启动成功"
@@ -625,7 +867,7 @@ start_services() {
         log_error "TTS服务组件启动失败"
         log_error "错误详情: $SUPERVISOR_START_ERROR"
         # 显示详细状态
-        supervisorctl status tts-services:* || true
+        supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status tts-services:* || true
     fi
 }
 
@@ -634,13 +876,13 @@ check_services() {
     log_step "检查服务状态..."
     
     # 检查supervisor守护进程
-    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    SUPERVISOR_STATUS=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status 2>&1)
     if [ $? -ne 0 ]; then
         log_warn "✗ supervisor守护进程未运行"
         log_warn "错误详情: $SUPERVISOR_STATUS"
         # 尝试启动supervisor
         log_info "尝试启动supervisor守护进程..."
-        start_supervisor_daemon || true
+        start_supervisord || true
         return 1
     else
         log_info "✓ supervisor守护进程运行正常"
@@ -648,7 +890,7 @@ check_services() {
     
     # 获取详细的服务状态
     log_info "获取详细服务状态..."
-    SERVICES_STATUS=$(supervisorctl status tts-services:* 2>&1)
+    SERVICES_STATUS=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status tts-services:* 2>&1)
     SERVICES_STATUS_EXIT_CODE=$?
     
     if [ $SERVICES_STATUS_EXIT_CODE -ne 0 ]; then
@@ -761,7 +1003,7 @@ check_services() {
     # 检查数据库连接
     log_info "检查数据库连接..."
     if [ -n "$MYSQL_PASSWORD" ]; then
-        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" 2>&1)
+        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" 2>&1)
         if [ $? -eq 0 ]; then
             log_info "✓ 数据库连接正常"
         else
@@ -769,7 +1011,7 @@ check_services() {
             log_warn "错误详情: $DB_ERROR"
         fi
     else
-        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -e "SELECT 1;" 2>&1)
+        DB_ERROR=$(mysql -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -e "SELECT 1;" 2>&1)
         if [ $? -eq 0 ]; then
             log_info "✓ 数据库连接正常"
         else
@@ -780,8 +1022,8 @@ check_services() {
     
     # 输出服务清单
     log_info "===== 服务清单 ====="
-    log_info "1. 数据库服务: MySQL (端口: $MYSQL_PORT)"
-    log_info "2. 缓存服务: Redis (端口: $REDIS_PORT)"
+    log_info "1. 数据库服务: MySQL (端口: ${MYSQL_PORT:-3306})"
+    log_info "2. 缓存服务: Redis (端口: ${REDIS_PORT:-6379})"
     log_info "3. API服务器 (端口: $PORT)"
     log_info "4. 任务处理器"
     log_info "===================="
@@ -792,7 +1034,7 @@ stop_services() {
     log_step "停止所有服务..."
     
     # 检查supervisor是否运行
-    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    SUPERVISOR_STATUS=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status 2>&1)
     if [ $? -ne 0 ]; then
         log_warn "supervisor守护进程未运行，无需停止服务"
         log_warn "错误详情: $SUPERVISOR_STATUS"
@@ -801,7 +1043,7 @@ stop_services() {
     
     # 停止TTS服务组
     log_info "正在停止TTS服务组件..."
-    supervisorctl stop tts-services:*
+    supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" stop tts-services:*
     
     if [ $? -eq 0 ]; then
         log_info "TTS服务组件已停止"
@@ -811,7 +1053,7 @@ stop_services() {
     
     # 停止supervisor守护进程
     log_info "正在停止supervisor守护进程..."
-    supervisorctl shutdown
+    supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" shutdown
     
     if [ $? -eq 0 ]; then
         log_info "supervisor守护进程已停止"
@@ -819,15 +1061,15 @@ stop_services() {
         log_warn "停止supervisor守护进程时出现问题"
     fi
     
-    # 清理旧的PID文件（兼容性）
-    rm -f logs/api_server.pid logs/worker_long.pid 2>/dev/null || true
+    # 清理PID和socket文件
+    rm -f "$PROJECT_ROOT/logs/supervisord.pid" "$PROJECT_ROOT/logs/supervisor.sock" 2>/dev/null || true
     
     log_info "所有服务已停止"
 }
 
 # supervisor管理命令
 supervisor_cmd() {
-    SUPERVISOR_STATUS=$(supervisorctl status 2>&1)
+    SUPERVISOR_STATUS=$(supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status 2>&1)
     if [ $? -ne 0 ]; then
         log_error "supervisor守护进程未运行，请先启动服务"
         log_error "错误详情: $SUPERVISOR_STATUS"
@@ -837,11 +1079,11 @@ supervisor_cmd() {
     case "$1" in
         "")
             log_info "supervisor服务状态:"
-            supervisorctl status
+            supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" status
             ;;
         *)
             log_info "执行supervisor命令: $*"
-            supervisorctl "$@"
+            supervisorctl -c "$PROJECT_ROOT/server/supervisor/supervisord.conf" "$@"
             ;;
     esac
 }
@@ -853,7 +1095,9 @@ show_help() {
     echo "用法: $0 [命令]"
     echo ""
     echo "命令:"
-    echo "  start                 启动所有服务 (包括TTS API、任务处理器)"
+    echo "  init                  初始化环境 (检查并安装依赖、数据库等)"
+    echo "  start                 启动所有服务 (需要先运行init)"
+    echo "  quickstart            快速启动 (自动初始化+启动服务)"
     echo "  stop                  停止所有服务"
     echo "  restart               重启所有服务"
     echo "  status                检查服务状态"
@@ -866,14 +1110,23 @@ show_help() {
     echo "  - TTS任务处理器       处理长文本语音合成任务"
 
     echo ""
-    echo "示例:"
-    echo "  $0 start              # 启动所有服务"
-    echo "  $0 stop               # 停止所有服务"
-    echo "  $0 restart            # 重启所有服务"
-    echo "  $0 status             # 检查服务状态"
-    echo "  $0 supervisor         # 查看supervisor状态"
-    echo "  $0 supervisor restart tts-api-server  # 重启API服务器"
-    echo "  $0 supervisor restart tts-api-server     # 重启API服务器"
+    echo "推荐使用流程:"
+    echo "  首次使用:"
+    echo "    $0 init               # 初始化环境（首次运行必须）"
+    echo "    $0 start              # 启动所有服务"
+    echo ""
+    echo "  或者使用快速启动:"
+    echo "    $0 quickstart         # 一键初始化并启动"
+    echo ""
+    echo "  日常使用:"
+    echo "    $0 start              # 启动服务"
+    echo "    $0 stop               # 停止服务"
+    echo "    $0 restart            # 重启服务"
+    echo "    $0 status             # 检查状态"
+    echo ""
+    echo "  高级操作:"
+    echo "    $0 supervisor         # 查看supervisor状态"
+    echo "    $0 supervisor restart tts-api-server  # 重启API服务器"
 }
 
 # 查看日志
@@ -907,26 +1160,50 @@ show_logs() {
 # 主函数
 main() {
     case "$1" in
+        init)
+            init_environment # 初始化环境
+            ;;
         start)
-            check_dependencies # 检查依赖
-            setup_environment # 配置环境变量
-            create_directories # 创建必要的目录
-            check_supervisor # 检查supervisor是否安装
-            install_python_dependencies # 安装Python依赖
+            # 快速检查关键环境变量是否存在
+            if [ ! -f "$PROJECT_ROOT/.env" ]; then
+                log_error ".env文件不存在，请先运行: $0 init"
+                exit 1
+            fi
             
-            # 先检查并启动数据库服务，避免连接测试失败
-            check_db_services # 检查数据库服务状态
-            start_db_services # 启动MySQL/Redis服务
+            # 加载环境变量
+            setup_environment
+            
+            # 检查关键服务是否可用
+            if ! command -v mysql &> /dev/null || ! command -v redis-server &> /dev/null; then
+                log_error "数据库服务未安装，请先运行: $0 init"
+                exit 1
+            fi
+            
+            if ! command -v supervisord &> /dev/null || ! command -v supervisorctl &> /dev/null; then
+                log_error "Supervisor未安装，请先运行: $0 init"
+                exit 1
+            fi
+            
+            log_info "开始启动TTS服务..."
+            
+            # 确保必要目录存在
+            create_directories
+            
+            # 启动数据库服务
+            log_step "启动数据库服务..."
+            start_db_services
             sleep 3 # 等待数据库服务就绪
             
-            start_supervisord # 启动supervisor守护进程
+            # 启动supervisor守护进程
+            start_supervisord
             
-            check_database # 检查数据库连接
-            initialize_database # 初始化数据库
-            start_services # 通过supervisor启动应用服务
+            # 启动应用服务
+            start_services
             
             sleep 5 # 等待服务启动
-            check_services # 检查服务状态
+            
+            # 检查服务状态
+            check_services
             
             log_info "所有服务启动完成！"
             log_info "API服务器地址: http://localhost:$PORT"
@@ -935,11 +1212,20 @@ main() {
             
             # 输出服务清单
             log_info "===== 服务清单 ====="
-            log_info "1. 数据库服务: MySQL (端口: $MYSQL_PORT)"
-            log_info "2. 缓存服务: Redis (端口: $REDIS_PORT)"
+            log_info "1. 数据库服务: MySQL (端口: ${MYSQL_PORT:-3306})"
+            log_info "2. 缓存服务: Redis (端口: ${REDIS_PORT:-6379})"
             log_info "3. API服务器 (端口: $PORT)"
             log_info "4. 任务处理器"
             log_info "===================="
+            
+            log_info "提示: 如果遇到问题，请先运行 '$0 init' 初始化环境"
+            ;;
+        quickstart)
+            log_info "快速启动模式: 自动初始化环境并启动服务"
+            init_environment
+            echo ""
+            log_info "环境初始化完成，开始启动服务..."
+            main start
             ;;
         stop)
             stop_services # 停止服务
